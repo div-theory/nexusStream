@@ -45,7 +45,7 @@ const App: React.FC = () => {
       </nav>
 
       {/* Main Content - Bento Grid Layout */}
-      <main className="flex-1 relative h-full bg-black overflow-hidden flex flex-col order-1 md:order-2">
+      <main role="main" className="flex-1 relative h-full bg-black overflow-hidden flex flex-col order-1 md:order-2">
         {/* Header Strip */}
         <header className="h-14 md:h-16 border-b border-white/10 flex items-center justify-between px-4 md:px-8 bg-black/50 backdrop-blur-sm z-10 shrink-0 pt-[env(safe-area-inset-top)] md:pt-0">
           <div className="flex items-baseline gap-4">

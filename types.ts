@@ -42,3 +42,17 @@ export interface SecurityContext {
   sessionSecret?: CryptoKey;
   lastRotation?: number;
 }
+
+// --- UI TYPES ---
+
+export interface ChatMessage {
+  id: string;
+  senderId: string;
+  senderName: string;
+  text: string;
+  timestamp: number;
+}
+
+export type ViewMode = 'gallery' | 'spotlight';
+
+export type SidePanelTab = 'chat' | 'people';

@@ -1,14 +1,17 @@
+
 import React, { useEffect, useRef, useState } from 'react';
 import Peer from 'peerjs';
 import { Button } from './Button';
 import { 
   Camera, CameraOff, Mic, MicOff, PhoneOff, 
   Copy, ArrowRight, Check, Eye, Loader2,
-  AlertCircle, ShieldCheck, Lock, Fingerprint, RefreshCcw, User, Zap
+  AlertCircle, ShieldCheck, Lock, Fingerprint, RefreshCcw, User, Zap,
+  MessageSquare, Users, LayoutGrid, Monitor
 } from 'lucide-react';
 import { SecureProtocolService } from '../services/secureProtocolService';
 import { TurnService } from '../services/turnService';
-import { CryptoIdentity, EphemeralKeys, SecurityContext, HandshakePayload } from '../types';
+import { MediaService } from '../services/mediaService';
+import { CryptoIdentity, EphemeralKeys, SecurityContext, HandshakePayload, ChatMessage, ViewMode, SidePanelTab } from '../types';
 
 // Types for PeerJS components to avoid strict build errors
 type MediaConnection = any;
@@ -17,6 +20,7 @@ type DataConnection = any;
 interface PeerStatus {
   isVideoEnabled: boolean;
   isAudioEnabled: boolean;
+  isScreenSharing: boolean;
 }
 
 interface P2PCallProps {
@@ -40,13 +44,22 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
   const [isVideoOff, setIsVideoOff] = useState(true); // Default to VOICE ONLY (Camera Off)
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isHttps, setIsHttps] = useState(true);
   
   // Remote State (via DataConnection)
-  const [remoteStatus, setRemoteStatus] = useState<PeerStatus>({ isVideoEnabled: true, isAudioEnabled: true });
+  const [remoteStatus, setRemoteStatus] = useState<PeerStatus>({ isVideoEnabled: true, isAudioEnabled: true, isScreenSharing: false });
   const [isRemoteSpeaking, setIsRemoteSpeaking] = useState(false);
   
   const [status, setStatus] = useState<'initializing' | 'idle' | 'calling' | 'connected'>('initializing');
   const [copied, setCopied] = useState(false);
+
+  // --- NEW UI STATES ---
+  const [viewMode, setViewMode] = useState<ViewMode>('gallery');
+  const [activeSidePanel, setActiveSidePanel] = useState<SidePanelTab | null>(null);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [newMessage, setNewMessage] = useState('');
+  const [unreadMessages, setUnreadMessages] = useState(0);
+  const [showControls, setShowControls] = useState(true);
 
   // --- TIMER STATE ---
   const [callDuration, setCallDuration] = useState(0);
@@ -63,11 +76,21 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animationRef = useRef<number>(0);
+  const controlsTimeoutRef = useRef<any>(null);
+  const chatEndRef = useRef<HTMLDivElement>(null);
   
   const localStreamRef = useRef<MediaStream | null>(null);
   const ephemeralKeysRef = useRef<EphemeralKeys | null>(null); // Per-session keys
   const rotationIntervalRef = useRef<any>(null);
   const isRequestingStream = useRef(false);
+
+  // --- INITIAL CHECK ---
+  useEffect(() => {
+    if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost') {
+        setIsHttps(false);
+        setError("SECURITY WARNING: Application is running on HTTP. Camera access will be blocked by the browser. Please use HTTPS.");
+    }
+  }, []);
 
   // --- HELPER: STOP STREAM ---
   const stopLocalStream = () => {
@@ -113,6 +136,8 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
         setPeerId(id);
         setStatus('idle');
         setError(null);
+        // Attempt to get stream after peer is ready if we are on HTTPS
+        if (isHttps) initLocalVideo();
       });
 
       // --- CRITICAL: AUTO RECONNECT ---
@@ -160,7 +185,8 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
         if (currentStream && currentStream.active) {
           answerCall(currentStream);
         } else {
-          getMobileFriendlyStream()
+          // Robustly fetch stream if missing
+          MediaService.getRobustStream()
             .then((mediaStream) => {
               setStream(mediaStream);
               localStreamRef.current = mediaStream;
@@ -170,7 +196,7 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
             })
             .catch(err => {
                console.error("Failed to get stream to answer call", err);
-               setError("Could not access camera to answer call.");
+               setError(MediaService.getErrorMessage(err));
             });
         }
       });
@@ -183,15 +209,20 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
       peerRef.current = peer;
     };
 
-    initSystem();
+    if (isHttps) {
+        initSystem();
+    } else {
+        setStatus('idle'); // Just show idle if http (will show error banner)
+    }
 
     return () => {
       peerRef.current?.destroy();
       if (animationRef.current) cancelAnimationFrame(animationRef.current);
       if (audioContextRef.current) audioContextRef.current.close();
       if (rotationIntervalRef.current) clearInterval(rotationIntervalRef.current);
+      stopLocalStream();
     };
-  }, []);
+  }, [isHttps]);
 
   // --- TIMER LOGIC ---
   useEffect(() => {
@@ -231,11 +262,12 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
           );
           if (conn.open) {
             conn.send(payload);
-            conn.send({ type: 'STATUS', video: !isVideoOff, audio: !isMuted });
+            conn.send({ type: 'STATUS', video: !isVideoOff, audio: !isMuted, screen: isScreenSharing });
           }
       });
 
       conn.on('data', async (data: any) => {
+          // --- HANDSHAKE HANDLERS ---
           if (
               data.type === 'SECURE_HANDSHAKE_INIT' || 
               data.type === 'SECURE_HANDSHAKE_RESP' ||
@@ -271,13 +303,40 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
              }
           }
 
+          // --- STATUS UPDATE ---
           if (data.type === 'STATUS') {
-             setRemoteStatus({ isVideoEnabled: data.video, isAudioEnabled: data.audio });
+             setRemoteStatus({ 
+                 isVideoEnabled: data.video, 
+                 isAudioEnabled: data.audio,
+                 isScreenSharing: data.screen || false
+             });
+          }
+
+          // --- CHAT MESSAGE ---
+          if (data.type === 'CHAT') {
+              const newMsg: ChatMessage = {
+                  id: Date.now().toString(),
+                  senderId: 'remote',
+                  senderName: 'Remote Peer',
+                  text: data.text,
+                  timestamp: Date.now()
+              };
+              setChatMessages(prev => [...prev, newMsg]);
+              if (activeSidePanel !== 'chat') {
+                  setUnreadMessages(prev => prev + 1);
+              }
           }
       });
 
       conn.on('error', (err: any) => console.error("Data connection error", err));
   };
+
+  useEffect(() => {
+    if (activeSidePanel === 'chat') {
+        setUnreadMessages(0);
+        chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [activeSidePanel, chatMessages]);
 
   useEffect(() => {
     if (status === 'connected' && securityContext?.isVerified && currentDataConn?.open && identity) {
@@ -340,65 +399,53 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
   }, [remoteStream, status]);
 
 
-  const getMobileFriendlyStream = async (): Promise<MediaStream> => {
-     try {
-       stopLocalStream();
-       return await navigator.mediaDevices.getUserMedia({ 
-           video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } }, 
-           audio: true 
-       });
-     } catch (err) {
-       console.warn("Specific constraints failed.", err);
-       await new Promise(resolve => setTimeout(resolve, 500));
-       return await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-     }
+  const initLocalVideo = async () => {
+    if (localStreamRef.current || isRequestingStream.current) return;
+    isRequestingStream.current = true;
+    
+    try {
+      const mediaStream = await MediaService.getRobustStream();
+      setStream(mediaStream);
+      localStreamRef.current = mediaStream;
+      
+      // --- SYNC WITH DEFAULT UI STATE ---
+      mediaStream.getVideoTracks().forEach(track => {
+          track.enabled = !isVideoOff;
+      });
+      
+      setError(null);
+    } catch (err: any) {
+      console.error("Failed local stream", err);
+      setError(MediaService.getErrorMessage(err));
+    } finally {
+      isRequestingStream.current = false;
+    }
   };
 
-  useEffect(() => {
-    const initLocalVideo = async () => {
-      if (localStreamRef.current || isRequestingStream.current) return;
-      isRequestingStream.current = true;
-      
-      try {
-        const mediaStream = await getMobileFriendlyStream();
-        setStream(mediaStream);
-        localStreamRef.current = mediaStream;
-        
-        // --- SYNC WITH DEFAULT UI STATE ---
-        // If isVideoOff is true by default, disable track immediately
-        mediaStream.getVideoTracks().forEach(track => {
-            track.enabled = !isVideoOff;
-        });
-        
-        setError(null);
-      } catch (err: any) {
-        console.error("Failed local stream", err);
-        if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
-             setError("Camera is in use by another app. Please close other tabs/apps and reload.");
-        } else if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-             setError("Camera permission denied. Please enable access in browser settings.");
-        } else {
-             setError(`Camera Error: ${err.message || 'Unknown error'}`);
-        }
-      } finally {
-        isRequestingStream.current = false;
-      }
-    };
-    
-    initLocalVideo();
-    return () => {};
-  }, []); // Run once on mount
-
-  const initiateCall = (remoteId: string) => {
-    const currentStream = localStreamRef.current;
-    if (!peerRef.current || !currentStream || !identity) {
-        if (!currentStream) setError("Camera not ready. Cannot start call.");
-        return;
-    }
+  const initiateCall = async (remoteId: string) => {
     if (!remoteId) {
         setError("Please enter a valid remote ID.");
         return;
     }
+
+    // Attempt to initialize stream if missing (Lazy Load)
+    if (!localStreamRef.current) {
+        console.log("Stream not ready, attempting to initialize...");
+        try {
+            await initLocalVideo();
+        } catch (e) {
+            setError("Cannot start call: Camera access failed.");
+            return;
+        }
+    }
+
+    const currentStream = localStreamRef.current;
+    if (!peerRef.current || !currentStream || !identity) {
+        if (!currentStream) setError("Camera still not ready. Check permissions.");
+        else setError("System not initialized.");
+        return;
+    }
+    
     setError(null);
     setStatus('calling');
     
@@ -449,9 +496,9 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
     }
   };
 
-  const sendStatusUpdate = (video: boolean, audio: boolean) => {
+  const sendStatusUpdate = (video: boolean, audio: boolean, screen: boolean) => {
       if (currentDataConn && currentDataConn.open) {
-          currentDataConn.send({ type: 'STATUS', video, audio });
+          currentDataConn.send({ type: 'STATUS', video, audio, screen });
       }
   };
 
@@ -461,7 +508,7 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
       if (audioTrack) {
         audioTrack.enabled = !audioTrack.enabled;
         setIsMuted(!audioTrack.enabled);
-        sendStatusUpdate(!isVideoOff, audioTrack.enabled);
+        sendStatusUpdate(!isVideoOff, audioTrack.enabled, isScreenSharing);
       }
     }
   };
@@ -472,9 +519,26 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
       if (videoTrack) {
         videoTrack.enabled = !videoTrack.enabled;
         setIsVideoOff(!videoTrack.enabled);
-        sendStatusUpdate(videoTrack.enabled, !isMuted);
+        sendStatusUpdate(videoTrack.enabled, !isMuted, isScreenSharing);
       }
     }
+  };
+
+  const sendChatMessage = (e?: React.FormEvent) => {
+      e?.preventDefault();
+      if (!newMessage.trim() || !currentDataConn?.open) return;
+      
+      const msg: ChatMessage = {
+          id: Date.now().toString(),
+          senderId: 'me',
+          senderName: 'Me',
+          text: newMessage,
+          timestamp: Date.now()
+      };
+      
+      currentDataConn.send({ type: 'CHAT', text: newMessage });
+      setChatMessages(prev => [...prev, msg]);
+      setNewMessage('');
   };
 
   const handleEndCall = () => {
@@ -484,9 +548,11 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
     setCurrentDataConn(null);
     setRemoteStream(null);
     setStatus('idle');
-    setRemoteStatus({ isVideoEnabled: true, isAudioEnabled: true });
+    setRemoteStatus({ isVideoEnabled: true, isAudioEnabled: true, isScreenSharing: false });
     setSecurityContext(null);
     setShowFingerprint(false);
+    setChatMessages([]);
+    setActiveSidePanel(null);
     if (animationRef.current) cancelAnimationFrame(animationRef.current);
     if (rotationIntervalRef.current) clearInterval(rotationIntervalRef.current);
     onEndCall();
@@ -500,6 +566,15 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
     }
   };
 
+  // --- IDLE CONTROL HIDER ---
+  const handleMouseMove = () => {
+      setShowControls(true);
+      if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
+      controlsTimeoutRef.current = setTimeout(() => {
+          if (status === 'connected' && !activeSidePanel) setShowControls(false);
+      }, 4000);
+  };
+
   const isConnected = status === 'connected' || status === 'calling';
 
   if (status === 'initializing') {
@@ -511,103 +586,192 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
       );
   }
 
+  // --- CONFERENCE ROOM UI ---
   if (isConnected) {
     return (
-      <div className="relative w-full h-full bg-zinc-950 overflow-hidden">
+      <div 
+        className="relative w-full h-full bg-zinc-950 overflow-hidden flex"
+        onMouseMove={handleMouseMove}
+        onClick={handleMouseMove}
+      >
         
-        {/* REMOTE VIDEO */}
-        <div className={`absolute inset-0 transition-opacity duration-700 ease-[cubic-bezier(0.19,1,0.22,1)] ${!remoteStatus.isVideoEnabled ? 'opacity-0' : 'opacity-100'}`}>
-             <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full object-cover" />
-        </div>
-
-        {/* REMOTE OFF STATE (VOICE VISUALIZER) */}
-        <div className={`absolute inset-0 flex items-center justify-center bg-zinc-900 z-0 transition-opacity duration-700 ${!remoteStatus.isVideoEnabled ? 'opacity-100' : 'opacity-0'}`}>
-             <div className="flex flex-col items-center">
-                 <div className={`w-32 h-32 rounded-full border border-zinc-700 flex items-center justify-center mb-6 relative ${isRemoteSpeaking ? 'shadow-[0_0_100px_rgba(37,99,235,0.3)] bg-zinc-800' : 'bg-zinc-900'}`}>
-                     <div className={`absolute inset-0 rounded-full bg-blue-600/20 transition-all duration-100 ${isRemoteSpeaking ? 'scale-125 opacity-100' : 'scale-100 opacity-0'}`}></div>
-                     {isRemoteSpeaking ? <Zap size={40} className="text-blue-500 fill-blue-500" /> : <User size={40} className="text-zinc-600" />}
+        {/* MAIN STAGE */}
+        <div className={`flex-1 relative flex flex-col transition-all duration-300 ${activeSidePanel ? 'mr-0' : 'mr-0'}`}>
+            
+            {/* TOP BAR */}
+            <div className={`absolute top-0 left-0 right-0 h-16 bg-gradient-to-b from-black/80 to-transparent z-40 flex items-center justify-between px-6 transition-transform duration-300 ${showControls || activeSidePanel ? 'translate-y-0' : '-translate-y-full'}`}>
+                 <div className="flex items-center gap-4">
+                    <div className="px-3 py-1 bg-zinc-900/80 backdrop-blur rounded-full border border-white/10 flex items-center gap-2">
+                        <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span>
+                        <span className="text-xs font-mono text-white/80 tracking-widest">{formatDuration(callDuration)}</span>
+                    </div>
+                    <div className="hidden md:flex items-center gap-2 px-3 py-1 bg-zinc-900/80 backdrop-blur rounded-full border border-white/10">
+                        <Lock size={12} className={securityContext?.isVerified ? "text-green-400" : "text-yellow-400"} />
+                        <span className="text-[10px] font-mono tracking-widest uppercase text-zinc-400">
+                            {securityContext?.isVerified ? 'E2EE SECURE' : 'VERIFYING...'}
+                        </span>
+                    </div>
                  </div>
-                 <span className="text-zinc-500 font-mono tracking-widest text-sm uppercase">Voice Link Active</span>
+                 
+                 <div className="flex items-center gap-2">
+                     <Button variant="ghost" size="icon" onClick={() => setShowFingerprint(!showFingerprint)}>
+                         <ShieldCheck size={20} className={showFingerprint ? 'text-blue-500' : 'text-zinc-400'} />
+                     </Button>
+                     <Button variant="ghost" size="icon" onClick={() => setActiveSidePanel(activeSidePanel === 'people' ? null : 'people')}>
+                         <Users size={20} className={activeSidePanel === 'people' ? 'text-blue-500' : 'text-zinc-400'} />
+                     </Button>
+                     <Button variant="ghost" size="icon" className="relative" onClick={() => setActiveSidePanel(activeSidePanel === 'chat' ? null : 'chat')}>
+                         <MessageSquare size={20} className={activeSidePanel === 'chat' ? 'text-blue-500' : 'text-zinc-400'} />
+                         {unreadMessages > 0 && (
+                             <span className="absolute top-2 right-2 w-2 h-2 bg-blue-500 rounded-full"></span>
+                         )}
+                     </Button>
+                 </div>
+            </div>
+
+            {/* FINGERPRINT OVERLAY */}
+            {showFingerprint && securityContext && (
+                 <div className="absolute top-20 left-6 z-50 p-5 bg-black border border-zinc-800 rounded-2xl shadow-2xl max-w-xs animate-in fade-in slide-in-from-top-2">
+                    <div className="flex items-center justify-between mb-4">
+                        <div className="flex items-center gap-2 text-zinc-500">
+                            <Fingerprint size={16} />
+                            <span className="text-xs font-mono uppercase tracking-widest">Safety Number</span>
+                        </div>
+                        <button onClick={() => setShowFingerprint(false)} className="text-zinc-500 hover:text-white">&times;</button>
+                    </div>
+                    <div className="grid grid-cols-4 gap-2 font-mono text-xl text-white tracking-tighter mb-4">
+                        {securityContext.safetyFingerprint.split(' ').map((block, i) => (
+                            <span key={i} className="bg-zinc-900 p-1 text-center border border-zinc-800 rounded">{block}</span>
+                        ))}
+                    </div>
+                    <div className="text-[10px] text-zinc-600 leading-relaxed uppercase">
+                        Verify this number matches on your peer's device to ensure security.
+                    </div>
+                 </div>
+            )}
+
+            {/* VIDEO GRID */}
+            <div className="flex-1 p-4 flex items-center justify-center">
+                 <div className="relative w-full h-full max-w-6xl max-h-[80vh] flex items-center justify-center">
+                     
+                     {/* REMOTE VIEW */}
+                     <div className={`relative w-full h-full rounded-3xl overflow-hidden bg-zinc-900 border border-zinc-800 transition-all duration-500 ${viewMode === 'spotlight' ? 'flex-1' : 'aspect-video'}`}>
+                        {/* Audio Visualizer if Video Off */}
+                        <div className={`absolute inset-0 flex items-center justify-center bg-zinc-900 z-10 transition-opacity duration-500 ${!remoteStatus.isVideoEnabled ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
+                            <div className={`w-32 h-32 rounded-full border border-zinc-700 flex items-center justify-center relative ${isRemoteSpeaking ? 'bg-zinc-800 shadow-[0_0_50px_rgba(37,99,235,0.2)]' : ''}`}>
+                                {isRemoteSpeaking ? <Zap size={40} className="text-blue-500 fill-blue-500" /> : <User size={40} className="text-zinc-600" />}
+                            </div>
+                        </div>
+                        <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full object-cover" />
+                        <div className="absolute bottom-4 left-4 px-3 py-1 bg-black/60 backdrop-blur rounded-lg text-white text-xs font-medium">
+                            Remote Peer {isRemoteSpeaking && '• Speaking'}
+                        </div>
+                     </div>
+
+                     {/* LOCAL PIP */}
+                     <div className={`absolute bottom-4 right-4 w-48 aspect-video bg-black rounded-xl border border-zinc-700 shadow-2xl overflow-hidden z-30 transition-all duration-500 ease-[cubic-bezier(0.34,1.56,0.64,1)] ${isVideoOff ? 'translate-y-[120%] opacity-0' : 'translate-y-0 opacity-100'}`}>
+                         <video ref={myVideoRef} autoPlay playsInline muted className="w-full h-full object-cover mirror" />
+                         <div className="absolute bottom-2 left-2 text-[10px] text-white/80 font-medium px-2 py-0.5 bg-black/50 rounded">You</div>
+                     </div>
+
+                 </div>
+            </div>
+
+            {/* BOTTOM CONTROLS */}
+            <div className={`absolute bottom-8 left-1/2 -translate-x-1/2 z-40 transition-all duration-300 ${showControls || activeSidePanel ? 'translate-y-0 opacity-100' : 'translate-y-20 opacity-0'}`}>
+                <div className="flex items-center gap-3 p-3 bg-zinc-900/90 backdrop-blur-xl border border-white/10 rounded-full shadow-2xl">
+                    <button onClick={toggleAudio} className={`p-3 rounded-full transition-all ${isMuted ? 'bg-red-600 text-white' : 'bg-zinc-800 text-white hover:bg-zinc-700'}`}>
+                        {isMuted ? <MicOff size={20} /> : <Mic size={20} />}
+                    </button>
+                    <button onClick={toggleVideo} className={`p-3 rounded-full transition-all ${isVideoOff ? 'bg-red-600 text-white' : 'bg-zinc-800 text-white hover:bg-zinc-700'}`}>
+                        {isVideoOff ? <CameraOff size={20} /> : <Camera size={20} />}
+                    </button>
+                    <div className="w-px h-6 bg-white/10 mx-1"></div>
+                    <button className="p-3 rounded-full bg-zinc-800 text-white hover:bg-zinc-700" onClick={() => setViewMode(viewMode === 'gallery' ? 'spotlight' : 'gallery')}>
+                        {viewMode === 'gallery' ? <Monitor size={20} /> : <LayoutGrid size={20} />}
+                    </button>
+                    <button 
+                        onClick={handleEndCall} 
+                        className="px-6 py-3 rounded-full bg-red-600 text-white hover:bg-red-500 font-bold tracking-wide transition-all ml-2"
+                    >
+                        <PhoneOff size={20} />
+                    </button>
+                </div>
+            </div>
+
+        </div>
+
+        {/* SIDE PANEL */}
+        <div className={`fixed inset-y-0 right-0 w-80 bg-zinc-900 border-l border-white/10 shadow-2xl transform transition-transform duration-300 z-50 ${activeSidePanel ? 'translate-x-0' : 'translate-x-full'}`}>
+             <div className="flex flex-col h-full">
+                 <div className="h-16 flex items-center justify-between px-6 border-b border-white/10">
+                     <h3 className="font-mono text-sm uppercase tracking-widest text-white">
+                         {activeSidePanel === 'people' ? 'Participants' : 'Chat'}
+                     </h3>
+                     <button onClick={() => setActiveSidePanel(null)} className="text-zinc-500 hover:text-white">&times;</button>
+                 </div>
+
+                 {activeSidePanel === 'chat' && (
+                     <div className="flex-1 flex flex-col overflow-hidden">
+                         <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                             {chatMessages.length === 0 && (
+                                 <div className="text-center text-zinc-600 mt-10 text-xs font-mono">No messages yet.</div>
+                             )}
+                             {chatMessages.map((msg) => (
+                                 <div key={msg.id} className={`flex flex-col ${msg.senderId === 'me' ? 'items-end' : 'items-start'}`}>
+                                     <div className={`max-w-[85%] p-3 rounded-xl text-sm ${msg.senderId === 'me' ? 'bg-blue-600 text-white rounded-tr-none' : 'bg-zinc-800 text-white rounded-tl-none'}`}>
+                                         {msg.text}
+                                     </div>
+                                     <span className="text-[10px] text-zinc-600 mt-1">
+                                         {new Date(msg.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                                     </span>
+                                 </div>
+                             ))}
+                             <div ref={chatEndRef} />
+                         </div>
+                         <form onSubmit={sendChatMessage} className="p-4 border-t border-white/10 bg-zinc-900">
+                             <div className="relative">
+                                 <input 
+                                    className="w-full bg-zinc-950 border border-zinc-700 rounded-full px-4 py-3 pr-10 text-sm text-white focus:outline-none focus:border-blue-500"
+                                    placeholder="Send a message..."
+                                    value={newMessage}
+                                    onChange={e => setNewMessage(e.target.value)}
+                                 />
+                                 <button type="submit" className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 bg-blue-600 rounded-full text-white disabled:opacity-50" disabled={!newMessage.trim()}>
+                                     <ArrowRight size={14} />
+                                 </button>
+                             </div>
+                         </form>
+                     </div>
+                 )}
+
+                 {activeSidePanel === 'people' && (
+                     <div className="p-4 space-y-4">
+                         <div className="flex items-center justify-between p-3 bg-zinc-950 rounded-xl border border-zinc-800">
+                             <div className="flex items-center gap-3">
+                                 <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-xs font-bold">ME</div>
+                                 <div className="flex flex-col">
+                                     <span className="text-sm font-bold text-white">You</span>
+                                     <span className="text-[10px] text-zinc-500 font-mono">Host</span>
+                                 </div>
+                             </div>
+                             <Mic size={14} className={isMuted ? "text-red-500" : "text-zinc-500"} />
+                         </div>
+                         <div className="flex items-center justify-between p-3 bg-zinc-950 rounded-xl border border-zinc-800">
+                             <div className="flex items-center gap-3">
+                                 <div className="w-8 h-8 rounded-full bg-zinc-700 flex items-center justify-center text-xs font-bold">P2</div>
+                                 <div className="flex flex-col">
+                                     <span className="text-sm font-bold text-white">Remote Peer</span>
+                                     <span className="text-[10px] text-zinc-500 font-mono">Connected</span>
+                                 </div>
+                             </div>
+                             <Mic size={14} className={!remoteStatus.isAudioEnabled ? "text-red-500" : "text-zinc-500"} />
+                         </div>
+                     </div>
+                 )}
              </div>
         </div>
-        
-        {/* SECURITY BADGE OVERLAY */}
-        <div className="absolute top-6 left-6 z-20 flex flex-col gap-2">
-           <div 
-             className={`flex items-center gap-2 px-4 py-2 rounded-full backdrop-blur-md border ${securityContext?.isVerified ? 'bg-black/80 border-green-500/50 text-green-400' : 'bg-black/80 border-yellow-500/50 text-yellow-400'} cursor-pointer hover:bg-zinc-900 transition-colors shadow-lg`}
-             onClick={() => setShowFingerprint(!showFingerprint)}
-           >
-              {securityContext?.isVerified ? <ShieldCheck size={16} /> : <Lock size={16} className="animate-pulse"/>}
-              <span className="text-[10px] font-mono font-bold tracking-widest uppercase">
-                {securityContext?.isVerified ? 'ENCRYPTED' : 'HANDSHAKE...'}
-              </span>
-           </div>
 
-           {securityContext?.lastRotation && (
-             <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-black/60 border border-white/10 backdrop-blur-md text-zinc-500 animate-in fade-in slide-in-from-left-2">
-                <RefreshCcw size={10} />
-                <span className="text-[9px] font-mono tracking-wider">
-                  ROTATED {Math.floor((Date.now() - securityContext.lastRotation) / 1000)}s AGO
-                </span>
-             </div>
-           )}
-
-           {showFingerprint && securityContext && (
-             <div className="mt-2 p-5 bg-black border border-zinc-800 rounded-none shadow-2xl max-w-xs animate-in fade-in slide-in-from-top-2">
-                <div className="flex items-center gap-2 mb-4 text-zinc-500">
-                  <Fingerprint size={16} />
-                  <span className="text-xs font-mono uppercase tracking-widest">Verification Key</span>
-                </div>
-                <div className="grid grid-cols-4 gap-2 font-mono text-xl text-white tracking-tighter mb-4">
-                  {securityContext.safetyFingerprint.split(' ').map((block, i) => (
-                    <span key={i} className="bg-zinc-900 p-1 text-center border border-zinc-800">{block}</span>
-                  ))}
-                </div>
-                <div className="text-[10px] text-zinc-600 leading-relaxed uppercase">
-                  Compare this key with your peer to verify integrity.
-                </div>
-             </div>
-           )}
-        </div>
-
-        {/* PIP - LOCAL VIDEO with SWEET ANIMATION */}
-        <div className={`absolute top-4 right-4 w-28 md:w-48 aspect-[9/16] bg-black border border-zinc-800 rounded-2xl shadow-2xl z-30 overflow-hidden group transition-all duration-700 ease-[cubic-bezier(0.34,1.56,0.64,1)] origin-top-right ${isVideoOff ? 'scale-0 opacity-0' : 'scale-100 opacity-100'}`}>
-             <video ref={myVideoRef} autoPlay playsInline muted className="w-full h-full object-cover mirror" />
-        </div>
-
-        {/* CALL TIMER - REPOSITIONED BOTTOM */}
-        <div className="absolute bottom-32 left-1/2 -translate-x-1/2 z-20 px-4 py-1 rounded-full bg-black/40 border border-white/5 backdrop-blur-md flex items-center gap-3 opacity-40 hover:opacity-100 transition-opacity duration-300">
-            <div className="w-1.5 h-1.5 rounded-full bg-red-600 animate-pulse" />
-            <span className="text-sm font-mono tracking-widest text-white/90">
-                {formatDuration(callDuration)}
-            </span>
-        </div>
-
-        {/* CONTROLS - FLOATING ISLAND */}
-        <div className="absolute bottom-10 left-1/2 -translate-x-1/2 flex items-center gap-6 p-4 md:p-6 bg-zinc-900/90 backdrop-blur-xl border border-white/10 rounded-full z-40 shadow-2xl mb-8 safe-pb">
-            <button 
-                onClick={toggleAudio} 
-                className={`p-4 rounded-full transition-all active:scale-95 shadow-md ${isMuted ? 'bg-red-600 text-white hover:bg-red-700' : 'bg-white text-black hover:bg-zinc-200'}`}
-                title={isMuted ? "Unmute" : "Mute"}
-            >
-                {isMuted ? <MicOff size={24} /> : <Mic size={24} />}
-            </button>
-            <button 
-                onClick={toggleVideo} 
-                className={`p-4 rounded-full transition-all active:scale-95 shadow-md ${isVideoOff ? 'bg-red-600 text-white hover:bg-red-700' : 'bg-white text-black hover:bg-zinc-200'}`}
-                title={isVideoOff ? "Turn Camera On" : "Turn Camera Off"}
-            >
-                {isVideoOff ? <CameraOff size={24} /> : <Camera size={24} />}
-            </button>
-            <div className="w-px h-8 bg-white/20 mx-2"></div>
-            <button 
-                onClick={handleEndCall} 
-                className="p-4 rounded-full bg-red-600 text-white hover:bg-red-500 transition-all active:scale-95 shadow-lg"
-                title="End Call"
-            >
-                <PhoneOff size={24} />
-            </button>
-        </div>
       </div>
     );
   }
@@ -636,7 +800,7 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
               <div className="mb-10 flex items-center gap-4 select-text">
                  <Fingerprint size={36} strokeWidth={1} className="text-zinc-700 shrink-0"/>
                  <div className="flex flex-col gap-1">
-                   <span className="text-[10px] text-zinc-600 font-mono uppercase tracking-[0.2em]">Public Key Hash</span>
+                   <span className="text-xs font-mono uppercase tracking-[0.2em] text-zinc-500">Public Key Hash</span>
                    <span className="text-lg md:text-xl text-blue-500 font-mono tracking-widest leading-none">{identity.publicKeyFingerprint}</span>
                  </div>
               </div>
@@ -692,6 +856,7 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
                     <AlertCircle size={40} className="text-red-600 mb-4" />
                     <span className="text-red-500 font-mono text-xs uppercase tracking-widest max-w-md leading-relaxed">{error}</span>
                     {error.includes("use") && <Button variant="ghost" onClick={() => window.location.reload()} className="mt-6 border border-zinc-800 text-zinc-400 rounded-full">System Reload</Button>}
+                    {error.includes("Camera") && <Button variant="primary" onClick={initLocalVideo} className="mt-6 border-zinc-600 rounded-full">Retry Camera</Button>}
                  </div>
              </div>
          )}

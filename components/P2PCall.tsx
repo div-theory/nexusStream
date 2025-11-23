@@ -1,4 +1,3 @@
-
 import React, { useEffect, useRef, useState } from 'react';
 import Peer from 'peerjs';
 import { Button } from './Button';
@@ -6,12 +5,12 @@ import {
   Camera, CameraOff, Mic, MicOff, PhoneOff, 
   Copy, ArrowRight, Check, Loader2,
   AlertCircle, ShieldCheck, Lock, Fingerprint, User, Zap,
-  MessageSquare, Users, LayoutGrid, Monitor
+  MessageSquare, Users, LayoutGrid, Monitor, Settings
 } from 'lucide-react';
 import { SecureProtocolService } from '../services/secureProtocolService';
 import { TurnService } from '../services/turnService';
 import { MediaService } from '../services/mediaService';
-import { CryptoIdentity, EphemeralKeys, SecurityContext, HandshakePayload, ChatMessage, ViewMode, SidePanelTab } from '../types';
+import { CryptoIdentity, EphemeralKeys, SecurityContext, HandshakePayload, ChatMessage, ViewMode, SidePanelTab, UserSettings, ToastNotification } from '../types';
 
 // Types for PeerJS components to avoid strict build errors
 type MediaConnection = any;
@@ -25,9 +24,11 @@ interface PeerStatus {
 
 interface P2PCallProps {
   onEndCall: () => void;
+  initialStream: MediaStream | null;
+  userSettings?: UserSettings;
 }
 
-export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
+export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall, initialStream, userSettings }) => {
   const [peerId, setPeerId] = useState<string>('');
   const [remotePeerIdValue, setRemotePeerIdValue] = useState('');
   
@@ -36,16 +37,17 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
   const [currentDataConn, setCurrentDataConn] = useState<DataConnection | null>(null);
   
   // Streams
-  const [stream, setStream] = useState<MediaStream | null>(null);
+  const [stream, setStream] = useState<MediaStream | null>(initialStream);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   
   // Local State
   const [isMuted, setIsMuted] = useState(false);
-  const [isVideoOff, setIsVideoOff] = useState(true); // Default to VOICE ONLY (Camera Off)
+  const [isVideoOff, setIsVideoOff] = useState(true); // Default to Voice Only (Video Off)
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isHttps, setIsHttps] = useState(true);
   const [isStreamLoading, setIsStreamLoading] = useState(false);
+  const [toasts, setToasts] = useState<ToastNotification[]>([]);
   
   // Remote State (via DataConnection)
   const [remoteStatus, setRemoteStatus] = useState<PeerStatus>({ isVideoEnabled: true, isAudioEnabled: true, isScreenSharing: false });
@@ -61,6 +63,11 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
   const [newMessage, setNewMessage] = useState('');
   const [unreadMessages, setUnreadMessages] = useState(0);
   const [showControls, setShowControls] = useState(true);
+
+  // --- SETTINGS MODAL ---
+  const [showSettings, setShowSettings] = useState(false);
+  const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([]);
+  const [videoDevices, setVideoDevices] = useState<MediaDeviceInfo[]>([]);
 
   // --- TIMER STATE ---
   const [callDuration, setCallDuration] = useState(0);
@@ -80,10 +87,19 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
   const controlsTimeoutRef = useRef<any>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   
-  const localStreamRef = useRef<MediaStream | null>(null);
+  const localStreamRef = useRef<MediaStream | null>(initialStream);
   const ephemeralKeysRef = useRef<EphemeralKeys | null>(null); // Per-session keys
   const rotationIntervalRef = useRef<any>(null);
   const initPromiseRef = useRef<Promise<MediaStream> | null>(null);
+
+  // --- HELPER: TOASTS ---
+  const addToast = (msg: string, type: 'info' | 'success' | 'error' = 'info') => {
+    const id = Date.now().toString();
+    setToasts(prev => [...prev, { id, message: msg, type }]);
+    setTimeout(() => {
+        setToasts(prev => prev.filter(t => t.id !== id));
+    }, 3000);
+  };
 
   // --- INITIAL CHECK ---
   useEffect(() => {
@@ -91,10 +107,29 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
         setIsHttps(false);
         setError("SECURITY WARNING: Application is running on HTTP. Camera access will be blocked by the browser. Please use HTTPS.");
     }
+    
+    // Set initial mute/video state based on stream tracks
+    if (initialStream) {
+        const vTrack = initialStream.getVideoTracks()[0];
+        const aTrack = initialStream.getAudioTracks()[0];
+        if (vTrack) setIsVideoOff(!vTrack.enabled);
+        if (aTrack) setIsMuted(!aTrack.enabled);
+    } else {
+        // If no initial stream, init immediately for Dashboard Preview
+        if (isHttps) initLocalVideo();
+    }
+    
+    // Load devices for settings
+    MediaService.getDevices().then(d => {
+        setAudioDevices(d.audio);
+        setVideoDevices(d.video);
+    });
   }, []);
 
   // --- HELPER: STOP STREAM ---
   const stopLocalStream = () => {
+    // We do NOT stop the stream on unmount if we want to preserve it, 
+    // but here we likely want to clean up if the component dies
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach(track => track.stop());
       localStreamRef.current = null;
@@ -137,8 +172,6 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
         setPeerId(id);
         setStatus('idle');
         setError(null);
-        // Attempt to get stream after peer is ready if we are on HTTPS
-        if (isHttps) initLocalVideo();
       });
 
       // --- CRITICAL: AUTO RECONNECT ---
@@ -164,7 +197,7 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
         }
 
         if (err.type === 'peer-unavailable') {
-            setError(`User "${remotePeerIdValue}" is unreachable. Check the ID.`);
+            addToast(`User unreachable`, 'error');
             setStatus('idle');
         } else if (err.type === 'unavailable-id' || err.type === 'invalid-id' || err.type === 'browser-incompatible') {
             setError(`Connection Error: ${err.type}`);
@@ -187,11 +220,14 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
           answerCall(currentStream);
         } else {
           // Robustly fetch stream if missing
-          initLocalVideo()
+          initLocalVideo(true) // Force retry
             .then((mediaStream) => {
               if (mediaStream) {
                 // Ensure track state matches UI state immediately on answer
-                mediaStream.getVideoTracks().forEach(t => t.enabled = !isVideoOff);
+                // Default to Video OFF for privacy on answer
+                mediaStream.getVideoTracks().forEach(t => t.enabled = false);
+                setIsVideoOff(true);
+                
                 answerCall(mediaStream);
               } else {
                  setError("Could not answer call: Camera access failed.");
@@ -295,6 +331,7 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
                     'SECURE_HANDSHAKE_RESP'
                   );
                   if (conn.open) conn.send(respPayload);
+                  addToast("Secure Connection Established", "success");
                }
              } else {
                setError("SECURITY ALERT: Verification Failed.");
@@ -323,6 +360,7 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
               setChatMessages(prev => [...prev, newMsg]);
               if (activeSidePanel !== 'chat') {
                   setUnreadMessages(prev => prev + 1);
+                  addToast("New message", "info");
               }
           }
       });
@@ -371,6 +409,7 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
 
   const handleCallSetup = (call: MediaConnection) => {
       setStatus('connected');
+      addToast("Call Connected", "success");
       call.on('stream', (rStream: MediaStream) => {
         setRemoteStream(rStream);
         setupAudioAnalysis(rStream);
@@ -415,6 +454,7 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
         localStreamRef.current = mediaStream;
         
         // --- SYNC WITH DEFAULT UI STATE ---
+        // Ensure default is VIDEO OFF for privacy
         mediaStream.getVideoTracks().forEach(track => {
             track.enabled = !isVideoOff;
         });
@@ -434,9 +474,42 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
     return loadTask;
   };
 
+  const handleDeviceChange = async (audioId?: string, videoId?: string) => {
+      try {
+          if (localStreamRef.current) {
+              localStreamRef.current.getTracks().forEach(t => t.stop());
+          }
+          
+          const newStream = await MediaService.getStreamWithDeviceId(audioId, videoId);
+          setStream(newStream);
+          localStreamRef.current = newStream;
+          
+          // Apply current mute states
+          newStream.getVideoTracks().forEach(t => t.enabled = !isVideoOff);
+          newStream.getAudioTracks().forEach(t => t.enabled = !isMuted);
+
+          // Replace track in active call
+          if (currentCall && currentCall.peerConnection) {
+              const senders = currentCall.peerConnection.getSenders();
+              senders.forEach((sender: any) => {
+                  if (sender.track?.kind === 'audio' && newStream.getAudioTracks()[0]) {
+                      sender.replaceTrack(newStream.getAudioTracks()[0]);
+                  }
+                  if (sender.track?.kind === 'video' && newStream.getVideoTracks()[0]) {
+                      sender.replaceTrack(newStream.getVideoTracks()[0]);
+                  }
+              });
+          }
+
+          addToast("Device updated", "success");
+      } catch (e: any) {
+          setError("Failed to switch device: " + e.message);
+      }
+  };
+
   const initiateCall = async (remoteId: string) => {
     if (!remoteId) {
-        setError("Please enter a valid remote ID.");
+        addToast("Enter a valid ID", "error");
         return;
     }
 
@@ -522,6 +595,7 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
         audioTrack.enabled = !audioTrack.enabled;
         setIsMuted(!audioTrack.enabled);
         sendStatusUpdate(!isVideoOff, audioTrack.enabled, isScreenSharing);
+        addToast(audioTrack.enabled ? "Microphone On" : "Microphone Muted", "info");
       }
     }
   };
@@ -533,6 +607,7 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
         videoTrack.enabled = !videoTrack.enabled;
         setIsVideoOff(!videoTrack.enabled);
         sendStatusUpdate(videoTrack.enabled, !isMuted, isScreenSharing);
+        addToast(videoTrack.enabled ? "Camera On" : "Camera Off", "info");
       }
     }
   };
@@ -544,7 +619,7 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
       const msg: ChatMessage = {
           id: Date.now().toString(),
           senderId: 'me',
-          senderName: 'Me',
+          senderName: userSettings?.displayName || 'Me',
           text: newMessage,
           timestamp: Date.now()
       };
@@ -568,7 +643,7 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
     setActiveSidePanel(null);
     if (animationRef.current) cancelAnimationFrame(animationRef.current);
     if (rotationIntervalRef.current) clearInterval(rotationIntervalRef.current);
-    onEndCall();
+    onEndCall(); 
   };
 
   const copyId = () => {
@@ -576,6 +651,7 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
         navigator.clipboard.writeText(peerId);
         setCopied(true);
         setTimeout(() => setCopied(false), 2000);
+        addToast("ID Copied to Clipboard", "success");
     }
   };
 
@@ -592,9 +668,9 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
 
   if (status === 'initializing') {
       return (
-          <div className="w-full h-full flex items-center justify-center bg-zinc-950 flex-col gap-4">
-              <Loader2 className="animate-spin text-blue-600" size={32} />
-              <div className="text-zinc-500 font-mono text-xs uppercase tracking-widest">Booting Talkr Node...</div>
+          <div className="w-full h-full flex items-center justify-center bg-background flex-col gap-4">
+              <Loader2 className="animate-spin text-accent" size={32} />
+              <div className="text-secondary font-mono text-xs uppercase tracking-widest">Booting Talkr Node...</div>
           </div>
       );
   }
@@ -603,11 +679,23 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
   if (isConnected) {
     return (
       <div 
-        className="relative w-full h-full bg-zinc-950 overflow-hidden flex"
+        className="relative w-full h-full bg-black overflow-hidden flex"
         onMouseMove={handleMouseMove}
         onClick={handleMouseMove}
       >
-        
+        {/* TOASTS CONTAINER */}
+        <div className="absolute top-20 left-1/2 -translate-x-1/2 z-[60] flex flex-col gap-2 w-full max-w-sm px-4">
+            {toasts.map(toast => (
+                <div key={toast.id} className={`p-3 rounded-xl border backdrop-blur text-sm font-medium shadow-lg animate-in fade-in slide-in-from-top-2 flex items-center justify-center ${
+                    toast.type === 'error' ? 'bg-red-900/50 border-red-800 text-white' : 
+                    toast.type === 'success' ? 'bg-green-900/50 border-green-800 text-white' : 
+                    'bg-zinc-900/80 border-zinc-800 text-white'
+                }`}>
+                    {toast.message}
+                </div>
+            ))}
+        </div>
+
         {/* MAIN STAGE */}
         <div className={`flex-1 relative flex flex-col transition-all duration-300 ${activeSidePanel ? 'mr-0' : 'mr-0'}`}>
             
@@ -624,15 +712,15 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
                  
                  <div className="flex items-center gap-2">
                      <Button variant="ghost" size="icon" onClick={() => setShowFingerprint(!showFingerprint)}>
-                         <ShieldCheck size={20} className={showFingerprint ? 'text-blue-500' : 'text-zinc-400'} />
+                         <ShieldCheck size={20} className={showFingerprint ? 'text-accent' : 'text-zinc-400'} />
                      </Button>
                      <Button variant="ghost" size="icon" onClick={() => setActiveSidePanel(activeSidePanel === 'people' ? null : 'people')}>
-                         <Users size={20} className={activeSidePanel === 'people' ? 'text-blue-500' : 'text-zinc-400'} />
+                         <Users size={20} className={activeSidePanel === 'people' ? 'text-accent' : 'text-zinc-400'} />
                      </Button>
                      <Button variant="ghost" size="icon" className="relative" onClick={() => setActiveSidePanel(activeSidePanel === 'chat' ? null : 'chat')}>
-                         <MessageSquare size={20} className={activeSidePanel === 'chat' ? 'text-blue-500' : 'text-zinc-400'} />
+                         <MessageSquare size={20} className={activeSidePanel === 'chat' ? 'text-accent' : 'text-zinc-400'} />
                          {unreadMessages > 0 && (
-                             <span className="absolute top-2 right-2 w-2 h-2 bg-blue-500 rounded-full"></span>
+                             <span className="absolute top-2 right-2 w-2 h-2 bg-accent rounded-full"></span>
                          )}
                      </Button>
                  </div>
@@ -668,7 +756,7 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
                         {/* Audio Visualizer if Video Off */}
                         <div className={`absolute inset-0 flex items-center justify-center bg-zinc-900 z-10 transition-opacity duration-500 ${!remoteStatus.isVideoEnabled ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
                             <div className={`w-32 h-32 rounded-full border border-zinc-700 flex items-center justify-center relative ${isRemoteSpeaking ? 'bg-zinc-800 shadow-[0_0_50px_rgba(37,99,235,0.2)]' : ''}`}>
-                                {isRemoteSpeaking ? <Zap size={40} className="text-blue-500 fill-blue-500" /> : <User size={40} className="text-zinc-600" />}
+                                {isRemoteSpeaking ? <Zap size={40} className="text-accent fill-accent" /> : <User size={40} className="text-zinc-600" />}
                             </div>
                         </div>
                         <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full object-cover" />
@@ -708,7 +796,7 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
                         {viewMode === 'gallery' ? <Monitor size={20} /> : <LayoutGrid size={20} />}
                     </button>
                     <button 
-                        onClick={handleEndCall} 
+                        onClick={onEndCall} 
                         className="px-6 py-3 rounded-full bg-red-600 text-white hover:bg-red-500 font-bold tracking-wide transition-all ml-2"
                     >
                         <PhoneOff size={20} />
@@ -719,42 +807,42 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
         </div>
 
         {/* SIDE PANEL */}
-        <div className={`fixed inset-y-0 right-0 w-80 bg-zinc-900 border-l border-white/10 shadow-2xl transform transition-transform duration-300 z-50 ${activeSidePanel ? 'translate-x-0' : 'translate-x-full'}`}>
+        <div className={`fixed inset-y-0 right-0 w-80 bg-surface border-l border-border shadow-2xl transform transition-transform duration-300 z-50 ${activeSidePanel ? 'translate-x-0' : 'translate-x-full'}`}>
              <div className="flex flex-col h-full">
-                 <div className="h-16 flex items-center justify-between px-6 border-b border-white/10">
-                     <h3 className="font-mono text-sm uppercase tracking-widest text-white">
+                 <div className="h-16 flex items-center justify-between px-6 border-b border-border">
+                     <h3 className="font-mono text-sm uppercase tracking-widest text-primary">
                          {activeSidePanel === 'people' ? 'Participants' : 'Chat'}
                      </h3>
-                     <button onClick={() => setActiveSidePanel(null)} className="text-zinc-500 hover:text-white">&times;</button>
+                     <button onClick={() => setActiveSidePanel(null)} className="text-secondary hover:text-primary">&times;</button>
                  </div>
 
                  {activeSidePanel === 'chat' && (
                      <div className="flex-1 flex flex-col overflow-hidden">
                          <div className="flex-1 overflow-y-auto p-4 space-y-4">
                              {chatMessages.length === 0 && (
-                                 <div className="text-center text-zinc-600 mt-10 text-xs font-mono">No messages yet.</div>
+                                 <div className="text-center text-secondary mt-10 text-xs font-mono">No messages yet.</div>
                              )}
                              {chatMessages.map((msg) => (
                                  <div key={msg.id} className={`flex flex-col ${msg.senderId === 'me' ? 'items-end' : 'items-start'}`}>
-                                     <div className={`max-w-[85%] p-3 rounded-xl text-sm ${msg.senderId === 'me' ? 'bg-blue-600 text-white rounded-tr-none' : 'bg-zinc-800 text-white rounded-tl-none'}`}>
+                                     <div className={`max-w-[85%] p-3 rounded-xl text-sm ${msg.senderId === 'me' ? 'bg-accent text-white rounded-tr-none' : 'bg-surface-highlight text-primary rounded-tl-none border border-border'}`}>
                                          {msg.text}
                                      </div>
-                                     <span className="text-[10px] text-zinc-600 mt-1">
+                                     <span className="text-[10px] text-secondary mt-1">
                                          {new Date(msg.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
                                      </span>
                                  </div>
                              ))}
                              <div ref={chatEndRef} />
                          </div>
-                         <form onSubmit={sendChatMessage} className="p-4 border-t border-white/10 bg-zinc-900">
+                         <form onSubmit={sendChatMessage} className="p-4 border-t border-border bg-surface">
                              <div className="relative">
                                  <input 
-                                    className="w-full bg-zinc-950 border border-zinc-700 rounded-full px-4 py-3 pr-10 text-sm text-white focus:outline-none focus:border-blue-500"
+                                    className="w-full bg-input border border-border rounded-full px-4 py-3 pr-10 text-sm text-primary placeholder:text-secondary focus:outline-none focus:border-accent"
                                     placeholder="Send a message..."
                                     value={newMessage}
                                     onChange={e => setNewMessage(e.target.value)}
                                  />
-                                 <button type="submit" className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 bg-blue-600 rounded-full text-white disabled:opacity-50" disabled={!newMessage.trim()}>
+                                 <button type="submit" className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 bg-accent rounded-full text-white disabled:opacity-50" disabled={!newMessage.trim()}>
                                      <ArrowRight size={14} />
                                  </button>
                              </div>
@@ -764,25 +852,25 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
 
                  {activeSidePanel === 'people' && (
                      <div className="p-4 space-y-4">
-                         <div className="flex items-center justify-between p-3 bg-zinc-950 rounded-xl border border-zinc-800">
+                         <div className="flex items-center justify-between p-3 bg-surface-highlight rounded-xl border border-border">
                              <div className="flex items-center gap-3">
-                                 <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-xs font-bold">ME</div>
+                                 <div className="w-8 h-8 rounded-full bg-accent flex items-center justify-center text-xs font-bold text-white">ME</div>
                                  <div className="flex flex-col">
-                                     <span className="text-sm font-bold text-white">You</span>
-                                     <span className="text-[10px] text-zinc-500 font-mono">Host</span>
+                                     <span className="text-sm font-bold text-primary">{userSettings?.displayName || 'You'}</span>
+                                     <span className="text-[10px] text-secondary font-mono">Host</span>
                                  </div>
                              </div>
-                             <Mic size={14} className={isMuted ? "text-red-500" : "text-zinc-500"} />
+                             <Mic size={14} className={isMuted ? "text-red-500" : "text-secondary"} />
                          </div>
-                         <div className="flex items-center justify-between p-3 bg-zinc-950 rounded-xl border border-zinc-800">
+                         <div className="flex items-center justify-between p-3 bg-surface-highlight rounded-xl border border-border">
                              <div className="flex items-center gap-3">
-                                 <div className="w-8 h-8 rounded-full bg-zinc-700 flex items-center justify-center text-xs font-bold">P2</div>
+                                 <div className="w-8 h-8 rounded-full bg-zinc-700 flex items-center justify-center text-xs font-bold text-white">P2</div>
                                  <div className="flex flex-col">
-                                     <span className="text-sm font-bold text-white">Remote Peer</span>
-                                     <span className="text-[10px] text-zinc-500 font-mono">Connected</span>
+                                     <span className="text-sm font-bold text-primary">Remote Peer</span>
+                                     <span className="text-[10px] text-secondary font-mono">Connected</span>
                                  </div>
                              </div>
-                             <Mic size={14} className={!remoteStatus.isAudioEnabled ? "text-red-500" : "text-zinc-500"} />
+                             <Mic size={14} className={!remoteStatus.isAudioEnabled ? "text-red-500" : "text-secondary"} />
                          </div>
                      </div>
                  )}
@@ -798,76 +886,81 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
     <div className="w-full h-full bento-grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 md:grid-rows-6 p-4 gap-4 auto-rows-fr">
       
       {/* Identity Card */}
-      <div className="bento-cell col-span-1 row-span-2 md:row-span-6 p-8 md:p-12 flex flex-col justify-center relative overflow-hidden min-h-[300px] rounded-3xl border border-zinc-800">
-        <div className="absolute -top-10 -right-10 p-0 opacity-[0.03]"><User size={400} /></div>
+      <div className="bento-cell col-span-1 row-span-2 md:row-span-6 p-8 md:p-12 flex flex-col justify-center relative overflow-hidden min-h-[300px] rounded-3xl border border-border bg-surface shadow-sm">
+        <div className="absolute -top-10 -right-10 p-0 opacity-[0.03] text-primary"><User size={400} /></div>
         <div className="relative z-10 flex flex-col h-full justify-center">
-            <h2 className="text-xs text-blue-600 font-bold font-mono mb-8 uppercase tracking-[0.2em] flex items-center gap-2">
-                <div className="w-2 h-2 bg-blue-600 rounded-full"></div>
+            <h2 className="text-xs text-accent font-bold font-mono mb-8 uppercase tracking-[0.2em] flex items-center gap-2">
+                <div className="w-2 h-2 bg-accent rounded-full"></div>
                 My Signal
             </h2>
             
             <div className="mb-4">
-                <div className="text-2xl md:text-4xl font-black text-white mb-2 break-all tracking-tighter leading-tight">
+                <div className="text-2xl md:text-4xl font-black text-primary mb-2 break-all tracking-tighter leading-tight">
                     {peerId ? peerId.substring(0, 6) : '......'}
-                    <span className="text-zinc-800">{peerId ? peerId.substring(6) : ''}</span>
+                    <span className="text-secondary">{peerId ? peerId.substring(6) : ''}</span>
                 </div>
             </div>
             
             {identity && (
               <div className="mb-10 flex items-center gap-4 select-text">
-                 <Fingerprint size={36} strokeWidth={1} className="text-zinc-700 shrink-0"/>
+                 <Fingerprint size={36} strokeWidth={1} className="text-secondary shrink-0"/>
                  <div className="flex flex-col gap-1">
-                   <span className="text-xs font-mono uppercase tracking-[0.2em] text-zinc-500">Public Key Hash</span>
-                   <span className="text-lg md:text-xl text-blue-500 font-mono tracking-widest leading-none">{identity.publicKeyFingerprint}</span>
+                   <span className="text-xs font-mono uppercase tracking-[0.2em] text-secondary">Public Key Hash</span>
+                   <span className="text-lg md:text-xl text-accent font-mono tracking-widest leading-none">{identity.publicKeyFingerprint}</span>
                  </div>
               </div>
             )}
             
             <div className="mt-auto">
-                <Button variant="secondary" onClick={copyId} className="w-full justify-between group h-16 border-zinc-800 hover:border-white hover:bg-white hover:text-black transition-all rounded-full">
+                <Button variant="secondary" onClick={copyId} className="w-full justify-between group h-16 rounded-full">
                     <span className="text-sm font-mono tracking-widest uppercase pl-2">{copied ? 'COPIED TO CLIPBOARD' : 'COPY ID'}</span>
-                    {copied ? <Check size={20} className="text-green-600" /> : <Copy size={20} className="text-zinc-500 group-hover:text-black"/>}
+                    {copied ? <Check size={20} className="text-green-600" /> : <Copy size={20} className="text-secondary group-hover:text-primary"/>}
                 </Button>
             </div>
         </div>
       </div>
 
       {/* Connect Card */}
-      <div className="bento-cell col-span-1 md:col-span-1 lg:col-span-2 row-span-2 md:row-span-3 p-8 md:p-12 flex flex-col justify-center bg-zinc-950 min-h-[300px] rounded-3xl border border-zinc-800">
-         <h2 className="text-xs text-zinc-600 font-bold font-mono mb-8 uppercase tracking-[0.2em]">Dial</h2>
-         <div className="flex flex-col gap-0 max-w-2xl w-full">
-             <div className="relative group">
+      <div className="bento-cell col-span-1 md:col-span-1 lg:col-span-2 row-span-2 md:row-span-3 p-8 md:p-12 flex flex-col justify-center bg-surface min-h-[300px] rounded-3xl border border-border shadow-sm">
+         {/* Updated Header */}
+         <div className="flex items-center gap-6 mb-8">
+            <h1 className="text-5xl md:text-7xl font-black tracking-tighter text-primary uppercase leading-none">
+                ENTER ID
+            </h1>
+            <ArrowRight className="w-12 h-12 md:w-16 md:h-16 text-primary stroke-[1.5]" />
+         </div>
+
+         {/* Updated Pill Input Bar */}
+         <div className="flex flex-col md:flex-row gap-6 items-start md:items-center">
+             <div className="flex-1 w-full bg-input rounded-2xl p-2 flex items-center border border-border shadow-inner relative group transition-colors focus-within:ring-2 focus-within:ring-accent/20">
                  <input 
                     type="text" 
-                    placeholder="ENTER ID"
-                    className="w-full bg-transparent border-b-2 border-zinc-800 py-6 text-white font-black placeholder:text-zinc-900 focus:border-blue-600 focus:outline-none transition-colors text-4xl md:text-6xl tracking-tighter uppercase rounded-none"
+                    placeholder="000ebb6d-673f-41ac..."
+                    className="w-full bg-transparent border-none px-4 py-3 text-lg md:text-xl font-mono font-bold text-primary placeholder:text-secondary focus:outline-none focus:ring-0"
                     value={remotePeerIdValue}
                     onChange={e => setRemotePeerIdValue(e.target.value)}
                  />
-             </div>
-             <div className="flex justify-end mt-8">
-                <Button 
-                    variant="primary" 
-                    size="lg" 
-                    className="py-6 px-8 bg-blue-600 border-blue-600 hover:bg-blue-500 hover:border-blue-500 text-white w-auto flex gap-4 items-center group disabled:opacity-50 disabled:cursor-not-allowed rounded-full transition-all"
+                 <Button 
+                    variant="primary"
+                    size="icon"
+                    className="shrink-0 w-12 h-12 rounded-xl shadow-sm"
                     onClick={() => initiateCall(remotePeerIdValue)} 
                     disabled={!remotePeerIdValue || !peerId || isStreamLoading}
                 >
-                    {isStreamLoading ? (
-                        <span className="flex items-center gap-2"><Loader2 className="animate-spin" size={20} /> INITIALIZING...</span>
-                    ) : (
-                        <>
-                            <span className="tracking-widest font-bold">CONNECT</span>
-                            <ArrowRight size={20} className="group-hover:translate-x-1 transition-transform" />
-                        </>
-                    )}
+                    {isStreamLoading ? <Loader2 className="animate-spin text-background" size={24} /> : <ArrowRight className="text-background" size={24} />}
                 </Button>
+             </div>
+
+             {/* Side Metadata */}
+             <div className="hidden md:flex flex-col gap-1 shrink-0">
+                 <span className="text-[10px] font-mono uppercase tracking-widest text-secondary">PUBLIC KEY HASH</span>
+                 <span className="text-xs font-mono font-bold text-secondary">09760dff068340bd</span>
              </div>
          </div>
       </div>
 
       {/* Local Preview Card */}
-      <div className="bento-cell col-span-1 md:col-span-1 lg:col-span-2 row-span-2 md:row-span-3 relative group overflow-hidden bg-black min-h-[250px] rounded-3xl border border-zinc-800">
+      <div className="bento-cell col-span-1 md:col-span-1 lg:col-span-2 row-span-2 md:row-span-3 relative group overflow-hidden bg-black min-h-[250px] rounded-3xl border border-border shadow-sm">
          {/* Animated Preview Container */}
          <div className={`w-full h-full transition-opacity duration-500 ${isVideoOff ? 'opacity-0' : 'opacity-50 group-hover:opacity-80'}`}>
             <video ref={myVideoRef} autoPlay playsInline muted className="w-full h-full object-cover mirror rounded-3xl" />
@@ -886,7 +979,7 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
          
          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
              {isVideoOff && !error ? (
-                 <div className="flex flex-col items-center gap-6 text-zinc-800 animate-in fade-in zoom-in duration-500">
+                 <div className="flex flex-col items-center gap-6 text-zinc-500 animate-in fade-in zoom-in duration-500">
                      <CameraOff size={64} strokeWidth={1} />
                      <span className="font-mono text-xs tracking-[0.3em] uppercase">Camera Disabled</span>
                  </div>
@@ -896,6 +989,14 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
          </div>
 
          <div className="absolute bottom-8 right-8 flex gap-3 z-20">
+            <Button 
+                variant="secondary" 
+                className="rounded-full bg-black/50 text-white border-white/20 hover:bg-white hover:text-black"
+                onClick={() => setShowSettings(true)}
+            >
+                <Settings size={20} />
+            </Button>
+
             <button onClick={toggleVideo} className={`p-4 border text-white transition-all rounded-full ${isVideoOff ? 'bg-zinc-900 border-zinc-800 hover:bg-zinc-800' : 'bg-black border-zinc-800 hover:bg-white hover:text-black'}`}>
                 {isVideoOff ? <CameraOff size={20} /> : <Camera size={20} />}
             </button>
@@ -903,6 +1004,56 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
                 {isMuted ? <MicOff size={20} /> : <Mic size={20} />}
             </button>
          </div>
+      </div>
+      
+      {/* Settings Modal (Added back for simple access) */}
+      {showSettings && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+              <div className="bg-surface border border-border rounded-3xl max-w-md w-full p-6 shadow-2xl animate-in zoom-in-95 duration-200">
+                  <div className="flex items-center justify-between mb-6">
+                      <h3 className="text-xl font-bold text-primary">Settings</h3>
+                      <button onClick={() => setShowSettings(false)} className="text-secondary hover:text-primary">&times;</button>
+                  </div>
+                  
+                  <div className="space-y-4">
+                      <div>
+                          <label className="text-xs font-mono uppercase text-secondary mb-2 block">Camera</label>
+                          <select 
+                             className="w-full bg-input border border-border rounded-xl p-3 text-sm text-primary"
+                             onChange={(e) => handleDeviceChange(undefined, e.target.value)}
+                          >
+                             {videoDevices.map(d => <option key={d.deviceId} value={d.deviceId}>{d.label || 'Camera'}</option>)}
+                          </select>
+                      </div>
+                      <div>
+                          <label className="text-xs font-mono uppercase text-secondary mb-2 block">Microphone</label>
+                          <select 
+                             className="w-full bg-input border border-border rounded-xl p-3 text-sm text-primary"
+                             onChange={(e) => handleDeviceChange(e.target.value, undefined)}
+                          >
+                             {audioDevices.map(d => <option key={d.deviceId} value={d.deviceId}>{d.label || 'Mic'}</option>)}
+                          </select>
+                      </div>
+                  </div>
+                  
+                  <div className="mt-8">
+                      <Button variant="primary" className="w-full rounded-xl" onClick={() => setShowSettings(false)}>Done</Button>
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {/* TOASTS (Dashboard position) */}
+      <div className="fixed top-24 right-6 z-[60] flex flex-col gap-2 w-full max-w-sm pointer-events-none">
+          {toasts.map(toast => (
+              <div key={toast.id} className={`p-3 rounded-xl border backdrop-blur text-sm font-medium shadow-lg animate-in fade-in slide-in-from-right-2 flex items-center justify-center pointer-events-auto ${
+                  toast.type === 'error' ? 'bg-red-900/50 border-red-800 text-white' : 
+                  toast.type === 'success' ? 'bg-green-900/50 border-green-800 text-white' : 
+                  'bg-surface/90 border-border text-primary'
+              }`}>
+                  {toast.message}
+              </div>
+          ))}
       </div>
     </div>
   );

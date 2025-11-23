@@ -3,34 +3,12 @@ export class MediaService {
   /**
    * ROBUST GET USER MEDIA
    * Tries multiple constraint strategies to ensure we get a stream.
-   * 1. Ideal (User Facing, HD)
-   * 2. Basic (Any Video)
-   * 3. Audio Only (Last Resort)
    */
   static async getRobustStream(): Promise<MediaStream> {
     const strategies = [
-      // Strategy 1: Ideal Mobile Config (User facing, 720p)
-      { 
-        video: { 
-          facingMode: 'user', 
-          width: { ideal: 1280 }, 
-          height: { ideal: 720 } 
-        }, 
-        audio: true 
-      },
-      // Strategy 2: Relaxed Video (Any camera, standard def)
-      { 
-        video: true, 
-        audio: true 
-      },
-      // Strategy 3: Low Bandwidth Video
-      { 
-        video: { 
-          width: { ideal: 320 }, 
-          height: { ideal: 240 } 
-        }, 
-        audio: true 
-      }
+      { video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } }, audio: true },
+      { video: true, audio: true },
+      { video: { width: { ideal: 320 }, height: { ideal: 240 } }, audio: true }
     ];
 
     let lastError: any;
@@ -44,15 +22,10 @@ export class MediaService {
       } catch (err: any) {
         console.warn("MediaService: Strategy failed", err.name, constraints);
         lastError = err;
-        
-        // If permission is explicitly denied, stop trying and throw immediately
-        if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-          throw err;
-        }
+        if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') throw err;
       }
     }
 
-    // Strategy 4: Audio Only (If video is impossible/broken hardware)
     try {
       console.warn("MediaService: All video strategies failed. Trying Audio Only.");
       const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
@@ -62,6 +35,35 @@ export class MediaService {
     }
 
     throw lastError || new Error("Could not acquire media stream");
+  }
+
+  /**
+   * Get list of available media devices
+   */
+  static async getDevices(): Promise<{ audio: MediaDeviceInfo[], video: MediaDeviceInfo[] }> {
+    try {
+      // Ensure permissions are granted first by requesting a temporary stream if necessary
+      // (Browsers often hide labels until permission is granted)
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      return {
+        audio: devices.filter(d => d.kind === 'audioinput'),
+        video: devices.filter(d => d.kind === 'videoinput')
+      };
+    } catch (e) {
+      console.error("Failed to enumerate devices", e);
+      return { audio: [], video: [] };
+    }
+  }
+
+  /**
+   * Get stream using specific device IDs
+   */
+  static async getStreamWithDeviceId(audioDeviceId?: string, videoDeviceId?: string): Promise<MediaStream> {
+    const constraints: MediaStreamConstraints = {
+      audio: audioDeviceId ? { deviceId: { exact: audioDeviceId } } : true,
+      video: videoDeviceId ? { deviceId: { exact: videoDeviceId }, width: { ideal: 1280 }, height: { ideal: 720 } } : true
+    };
+    return navigator.mediaDevices.getUserMedia(constraints);
   }
 
   static getErrorMessage(err: any): string {

@@ -56,3 +56,15 @@ export interface ChatMessage {
 export type ViewMode = 'gallery' | 'spotlight';
 
 export type SidePanelTab = 'chat' | 'people';
+
+export interface UserSettings {
+  displayName: string;
+  audioDeviceId?: string;
+  videoDeviceId?: string;
+}
+
+export interface ToastNotification {
+  id: string;
+  message: string;
+  type: 'info' | 'success' | 'error';
+}

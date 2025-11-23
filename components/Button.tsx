@@ -12,21 +12,26 @@ export const Button: React.FC<ButtonProps> = ({
   className = '', 
   ...props 
 }) => {
-  const baseStyles = "sharp inline-flex items-center justify-center font-light transition-all duration-200 focus:outline-none disabled:opacity-50 disabled:pointer-events-none active:translate-x-0.5 active:translate-y-0.5";
+  const baseStyles = "inline-flex items-center justify-center font-medium transition-all duration-200 focus:outline-none disabled:opacity-50 disabled:pointer-events-none active:scale-95";
   
   const variants = {
-    primary: "bg-white text-black border border-white hover:bg-black hover:text-white",
-    secondary: "bg-black text-white border border-white/20 hover:border-white hover:bg-white/5",
+    // Inverts based on theme: White on Black (Dark Mode) -> Black on White (Light Mode)
+    primary: "bg-primary text-background border border-primary hover:bg-transparent hover:text-primary",
+    // Transparent with border
+    secondary: "bg-transparent text-primary border border-border hover:border-primary hover:bg-primary/5",
+    // Accent (Blue)
     accent: "bg-blue-600 text-white border border-blue-600 hover:bg-transparent hover:text-blue-500",
-    danger: "bg-transparent text-red-500 border border-red-900/50 hover:bg-red-950 hover:border-red-500",
-    ghost: "bg-transparent text-slate-400 hover:text-white hover:bg-white/5",
+    // Danger (Red) - always red
+    danger: "bg-transparent text-red-500 border border-red-500/30 hover:bg-red-500/10 hover:border-red-500",
+    // Ghost
+    ghost: "bg-transparent text-secondary hover:text-primary hover:bg-surface-highlight",
   };
 
   const sizes = {
-    sm: "px-3 py-1 text-xs font-mono tracking-wider",
-    md: "px-5 py-2 text-sm uppercase tracking-widest",
-    lg: "px-8 py-3 text-base uppercase tracking-widest",
-    icon: "p-3 aspect-square"
+    sm: "px-3 py-1 text-xs font-mono tracking-wider rounded-lg",
+    md: "px-5 py-2 text-sm uppercase tracking-widest rounded-xl",
+    lg: "px-8 py-3 text-base uppercase tracking-widest rounded-2xl",
+    icon: "p-3 aspect-square rounded-xl"
   };
 
   return (

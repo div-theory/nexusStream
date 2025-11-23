@@ -1,4 +1,4 @@
-import { GoogleGenAI, LiveServerMessage, Modality, Blob } from '@google/genai';
+import { GoogleGenAI, LiveServerMessage, Modality } from '@google/genai';
 
 interface GeminiLiveConfig {
   apiKey: string;
@@ -7,6 +7,11 @@ interface GeminiLiveConfig {
   onError: (error: Error) => void;
   onClose: () => void;
   onOpen: () => void;
+}
+
+interface GeminiAudioData {
+  mimeType: string;
+  data: string;
 }
 
 export class GeminiLiveService {
@@ -27,9 +32,13 @@ export class GeminiLiveService {
     if (this.isConnected) return;
 
     try {
-      // 1. Setup Audio Contexts
-      this.inputAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
-      this.outputAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+      // 1. Setup Audio Contexts safely
+      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioContextClass) {
+          throw new Error("Web Audio API not supported");
+      }
+      this.inputAudioContext = new AudioContextClass({ sampleRate: 16000 });
+      this.outputAudioContext = new AudioContextClass({ sampleRate: 24000 });
       
       // 2. Get User Media
       this.currentStream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -79,10 +88,10 @@ export class GeminiLiveService {
     this.processor.onaudioprocess = (e) => {
       if (!this.isConnected) return;
       const inputData = e.inputBuffer.getChannelData(0);
-      const pcmBlob = this.createBlob(inputData);
+      const pcmData = this.createPcmData(inputData);
       
       this.sessionPromise?.then((session) => {
-        session.sendRealtimeInput({ media: pcmBlob });
+        session.sendRealtimeInput({ media: pcmData });
       });
     };
 
@@ -125,21 +134,19 @@ export class GeminiLiveService {
     if (this.currentStream) {
       this.currentStream.getTracks().forEach(t => t.stop());
     }
-    if (this.inputAudioContext) {
+    if (this.inputAudioContext && this.inputAudioContext.state !== 'closed') {
       await this.inputAudioContext.close();
     }
-    if (this.outputAudioContext) {
+    if (this.outputAudioContext && this.outputAudioContext.state !== 'closed') {
       await this.outputAudioContext.close();
     }
     
-    // Attempt to close session if API supports it, or just let the connection drop
-    // this.sessionPromise?.then(s => s.close()); // If method exists
     this.sessionPromise = null;
   }
 
-  // --- Helpers from Gemini Documentation ---
+  // --- Helpers ---
 
-  private createBlob(data: Float32Array): Blob {
+  private createPcmData(data: Float32Array): GeminiAudioData {
     const l = data.length;
     const int16 = new Int16Array(l);
     for (let i = 0; i < l; i++) {

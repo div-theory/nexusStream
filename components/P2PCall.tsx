@@ -1,10 +1,19 @@
 import React, { useEffect, useRef, useState } from 'react';
-import Peer, { MediaConnection } from 'peerjs';
+import Peer from 'peerjs';
 import { Button } from './Button';
 import { 
   Camera, CameraOff, Mic, MicOff, Monitor, PhoneOff, 
-  Copy, Share2, Signal, MonitorOff 
+  Copy, Signal, MonitorOff, UserPlus, Zap, Check, Eye
 } from 'lucide-react';
+
+// Types for PeerJS components to avoid strict build errors
+type MediaConnection = any;
+type DataConnection = any;
+
+interface PeerStatus {
+  isVideoEnabled: boolean;
+  isAudioEnabled: boolean;
+}
 
 interface P2PCallProps {
   onEndCall: () => void;
@@ -13,62 +22,95 @@ interface P2PCallProps {
 export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
   const [peerId, setPeerId] = useState<string>('');
   const [remotePeerIdValue, setRemotePeerIdValue] = useState('');
-  const [currentCall, setCurrentCall] = useState<MediaConnection | null>(null);
   
+  // Connections
+  const [currentCall, setCurrentCall] = useState<MediaConnection | null>(null);
+  const [currentDataConn, setCurrentDataConn] = useState<DataConnection | null>(null);
+  
+  // Streams
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   
+  // Local State
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoOff, setIsVideoOff] = useState(false);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
+  
+  // Remote State (via DataConnection)
+  const [remoteStatus, setRemoteStatus] = useState<PeerStatus>({ isVideoEnabled: true, isAudioEnabled: true });
+  const [isRemoteSpeaking, setIsRemoteSpeaking] = useState(false);
+  
   const [status, setStatus] = useState<'initializing' | 'idle' | 'calling' | 'connected'>('initializing');
+  const [copied, setCopied] = useState(false);
 
+  // Refs
   const myVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const peerRef = useRef<Peer | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const animationRef = useRef<number>(0);
 
-  // Initialize Peer
+  // --- 1. Initialize Peer & Local Stream ---
   useEffect(() => {
-    import('peerjs').then(({ default: Peer }) => {
-      const peer = new Peer();
-      
-      peer.on('open', (id) => {
-        setPeerId(id);
-        setStatus('idle');
-      });
-
-      peer.on('call', (call) => {
-        navigator.mediaDevices.getUserMedia({ video: true, audio: true })
-          .then((mediaStream) => {
-            setStream(mediaStream);
-            if (myVideoRef.current) myVideoRef.current.srcObject = mediaStream;
-            
-            call.answer(mediaStream);
-            
-            call.on('stream', (remoteStream) => {
-              setRemoteStream(remoteStream);
-              if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remoteStream;
-              setStatus('connected');
-            });
-
-            call.on('close', () => {
-              handleEndCall();
-            });
-
-            setCurrentCall(call);
-            setStatus('connected');
-          });
-      });
-
-      peerRef.current = peer;
+    let peer: Peer;
+    try {
+      peer = new Peer();
+    } catch (e) {
+      console.error("PeerJS init failed", e);
+      return;
+    }
+    
+    peer.on('open', (id) => {
+      setPeerId(id);
+      setStatus('idle');
     });
 
+    // Handle incoming media calls
+    peer.on('call', (call: MediaConnection) => {
+      navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+        .then((mediaStream) => {
+          setStream(mediaStream);
+          if (myVideoRef.current) myVideoRef.current.srcObject = mediaStream;
+          
+          call.answer(mediaStream);
+          setStatus('connected');
+          
+          call.on('stream', (remoteStream: MediaStream) => {
+            setRemoteStream(remoteStream);
+            if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remoteStream;
+            setupAudioAnalysis(remoteStream);
+          });
+
+          call.on('close', () => handleEndCall());
+          setCurrentCall(call);
+        });
+    });
+
+    // Handle incoming data connections (for status sync)
+    peer.on('connection', (conn: DataConnection) => {
+       setCurrentDataConn(conn);
+       conn.on('data', (data: any) => {
+          if (data && data.type === 'STATUS') {
+             setRemoteStatus({ isVideoEnabled: data.video, isAudioEnabled: data.audio });
+          }
+       });
+       conn.on('open', () => {
+          // Send initial status back
+          conn.send({ type: 'STATUS', video: !isVideoOff, audio: !isMuted });
+       });
+    });
+
+    peerRef.current = peer;
+
     return () => {
-      peerRef.current?.destroy();
+      peer.destroy();
+      if (animationRef.current) cancelAnimationFrame(animationRef.current);
+      if (audioContextRef.current) audioContextRef.current.close();
     };
   }, []);
 
-  // Initialize Local Video
+  // Initialize Local Video Preview
   useEffect(() => {
     const initLocalVideo = async () => {
       try {
@@ -76,7 +118,7 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
         setStream(mediaStream);
         if (myVideoRef.current) myVideoRef.current.srcObject = mediaStream;
       } catch (err) {
-        console.error("Failed to get local stream", err);
+        console.error("Failed local stream", err);
       }
     };
     initLocalVideo();
@@ -86,73 +128,94 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
     };
   }, []);
 
+  // Mirror effect binding
+  useEffect(() => {
+    if (myVideoRef.current && stream) {
+        myVideoRef.current.srcObject = stream;
+    }
+  }, [stream, status]);
+
+  // --- 2. Logic: Calls & Connections ---
+
   const initiateCall = (remoteId: string) => {
     if (!peerRef.current || !stream) return;
     setStatus('calling');
     
+    // Media Call
     const call = peerRef.current.call(remoteId, stream);
     
-    call.on('stream', (remoteStream) => {
+    call.on('stream', (remoteStream: MediaStream) => {
       setRemoteStream(remoteStream);
       if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remoteStream;
+      setupAudioAnalysis(remoteStream);
       setStatus('connected');
     });
 
     call.on('close', () => {
-      setRemoteStream(null);
-      setStatus('idle');
-      setCurrentCall(null);
+      handleEndCall();
     });
 
     setCurrentCall(call);
+
+    // Data Connection (for status)
+    const conn = peerRef.current.connect(remoteId);
+    conn.on('open', () => {
+        conn.send({ type: 'STATUS', video: !isVideoOff, audio: !isMuted });
+    });
+    conn.on('data', (data: any) => {
+        if (data && data.type === 'STATUS') {
+            setRemoteStatus({ isVideoEnabled: data.video, isAudioEnabled: data.audio });
+        }
+    });
+    setCurrentDataConn(conn);
   };
 
-  const toggleScreenShare = async () => {
-    if (isScreenSharing) {
-      const newStream = await navigator.mediaDevices.getUserMedia({ video: !isVideoOff, audio: true });
-      replaceStream(newStream);
-      setIsScreenSharing(false);
-    } else {
-      try {
-        const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
-        replaceStream(screenStream);
-        setIsScreenSharing(true);
-        screenStream.getVideoTracks()[0].onended = () => {
-            toggleScreenShare();
+  const setupAudioAnalysis = (stream: MediaStream) => {
+    try {
+        const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+        const audioCtx = new AudioContextClass();
+        const analyser = audioCtx.createAnalyser();
+        const source = audioCtx.createMediaStreamSource(stream);
+        source.connect(analyser);
+        analyser.fftSize = 256;
+        
+        audioContextRef.current = audioCtx;
+        analyserRef.current = analyser;
+
+        const bufferLength = analyser.frequencyBinCount;
+        const dataArray = new Uint8Array(bufferLength);
+
+        const checkAudio = () => {
+            analyser.getByteFrequencyData(dataArray);
+            const sum = dataArray.reduce((a, b) => a + b, 0);
+            const average = sum / bufferLength;
+            // Threshold for "speaking"
+            setIsRemoteSpeaking(average > 10);
+            animationRef.current = requestAnimationFrame(checkAudio);
         };
-      } catch (e) {
-        console.error("Screen share cancelled", e);
-      }
+        checkAudio();
+    } catch (e) {
+        console.error("Audio analysis setup failed", e);
     }
   };
 
-  const replaceStream = (newStream: MediaStream) => {
-    if (stream) {
-      stream.getTracks().forEach(track => {
-        if (track.kind === 'video' && newStream.getVideoTracks().length > 0) track.stop();
-      });
-    }
+  // --- 3. Logic: Toggles & Actions ---
 
-    setStream(newStream);
-    if (myVideoRef.current) myVideoRef.current.srcObject = newStream;
-
-    if (currentCall && currentCall.peerConnection) {
-        const videoTrack = newStream.getVideoTracks()[0];
-        const audioTrack = newStream.getAudioTracks()[0];
-        const senders = currentCall.peerConnection.getSenders();
-        const videoSender = senders.find(s => s.track?.kind === 'video');
-        if (videoSender && videoTrack) videoSender.replaceTrack(videoTrack);
-        const audioSender = senders.find(s => s.track?.kind === 'audio');
-        if (audioSender && audioTrack) audioSender.replaceTrack(audioTrack);
-    }
+  const sendStatusUpdate = (video: boolean, audio: boolean) => {
+      if (currentDataConn && currentDataConn.open) {
+          currentDataConn.send({ type: 'STATUS', video, audio });
+      }
   };
 
   const toggleAudio = () => {
     if (stream) {
       const audioTrack = stream.getAudioTracks()[0];
       if (audioTrack) {
-        audioTrack.enabled = !audioTrack.enabled;
-        setIsMuted(!audioTrack.enabled);
+        const newMutedState = !audioTrack.enabled; // Toggle
+        audioTrack.enabled = newMutedState; // Actually flip
+        const isNowMuted = !newMutedState; // If enabled=true, muted=false
+        setIsMuted(isNowMuted);
+        sendStatusUpdate(!isVideoOff, !isNowMuted);
       }
     }
   };
@@ -161,129 +224,253 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
     if (stream) {
       const videoTrack = stream.getVideoTracks()[0];
       if (videoTrack) {
-        videoTrack.enabled = !videoTrack.enabled;
-        setIsVideoOff(!videoTrack.enabled);
+        const newVideoState = !videoTrack.enabled;
+        videoTrack.enabled = newVideoState;
+        const isNowVideoOff = !newVideoState;
+        setIsVideoOff(isNowVideoOff);
+        sendStatusUpdate(!isNowVideoOff, !isMuted);
       }
+    }
+  };
+
+  const toggleScreenShare = async () => {
+    if (isScreenSharing) {
+      try {
+        const newStream = await navigator.mediaDevices.getUserMedia({ video: !isVideoOff, audio: true });
+        replaceStream(newStream);
+        setIsScreenSharing(false);
+      } catch (e) {
+        console.error("Failed revert to camera", e);
+      }
+    } else {
+      try {
+        const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+        replaceStream(screenStream);
+        setIsScreenSharing(true);
+        screenStream.getVideoTracks()[0].onended = () => toggleScreenShare();
+      } catch (e) {
+        console.error("Screen share cancelled", e);
+      }
+    }
+  };
+
+  const replaceStream = (newStream: MediaStream) => {
+    if (stream) {
+        stream.getVideoTracks().forEach(t => t.stop());
+    }
+    setStream(newStream);
+    if (myVideoRef.current) myVideoRef.current.srcObject = newStream;
+    
+    if (currentCall && currentCall.peerConnection) {
+        const videoTrack = newStream.getVideoTracks()[0];
+        const senders = currentCall.peerConnection.getSenders();
+        const videoSender = senders.find((s: RTCRtpSender) => s.track?.kind === 'video');
+        if (videoSender && videoTrack) videoSender.replaceTrack(videoTrack);
     }
   };
 
   const handleEndCall = () => {
     currentCall?.close();
+    currentDataConn?.close();
     setCurrentCall(null);
+    setCurrentDataConn(null);
     setRemoteStream(null);
     setStatus('idle');
+    setRemoteStatus({ isVideoEnabled: true, isAudioEnabled: true });
+    if (animationRef.current) cancelAnimationFrame(animationRef.current);
+    if (audioContextRef.current) audioContextRef.current.close();
     onEndCall();
   };
 
   const copyId = () => {
-    navigator.clipboard.writeText(peerId);
+    if (peerId) {
+        navigator.clipboard.writeText(peerId);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+    }
   };
 
-  return (
-    <div className="w-full h-full bento-grid grid-cols-1 md:grid-cols-4 grid-rows-6 md:grid-rows-12">
-      
-      {/* Main Connection Status / Controls - Top Left */}
-      <div className="bento-cell md:col-span-1 md:row-span-12 p-6 flex flex-col justify-between border-b md:border-b-0 md:border-r border-white/10">
-        <div className="space-y-6">
-            <div>
-                <h2 className="text-sm text-zinc-500 font-mono mb-2 uppercase tracking-widest">Identity</h2>
-                <div className="p-3 bg-zinc-900 border border-white/10 flex flex-col gap-2">
-                    <span className="font-mono text-xs text-blue-400 break-all">{peerId || 'INITIALIZING...'}</span>
-                    <button onClick={copyId} className="flex items-center gap-2 text-xs text-white hover:text-blue-400 transition-colors uppercase tracking-wider">
-                        <Copy size={12} /> Copy ID
-                    </button>
-                </div>
-            </div>
+  const isConnected = status === 'connected' || status === 'calling';
 
-            {status === 'idle' && (
-                <div>
-                    <h2 className="text-sm text-zinc-500 font-mono mb-2 uppercase tracking-widest">Connect</h2>
-                    <div className="space-y-2">
-                        <input 
-                            type="text" 
-                            placeholder="REMOTE ID"
-                            className="w-full bg-black border border-white/20 p-3 text-sm text-white font-mono placeholder:text-zinc-700 focus:border-blue-600 focus:outline-none transition-colors"
-                            value={remotePeerIdValue}
-                            onChange={e => setRemotePeerIdValue(e.target.value)}
-                        />
-                        <Button variant="primary" className="w-full" onClick={() => initiateCall(remotePeerIdValue)} disabled={!remotePeerIdValue}>
-                            Connect
-                        </Button>
-                    </div>
-                </div>
-            )}
+  // --- RENDER ---
 
-            <div>
-                 <h2 className="text-sm text-zinc-500 font-mono mb-2 uppercase tracking-widest">Status</h2>
-                 <div className="flex items-center gap-3">
-                    <div className={`w-2 h-2 ${status === 'connected' ? 'bg-blue-500' : 'bg-zinc-700'}`}></div>
-                    <span className="text-sm font-light uppercase">{status}</span>
-                 </div>
-            </div>
-        </div>
-
-        {/* Local Preview - Bottom of sidebar */}
-        <div className="mt-auto pt-6 border-t border-white/10">
-            <h2 className="text-sm text-zinc-500 font-mono mb-2 uppercase tracking-widest">Local Feed</h2>
-            <div className="aspect-video bg-zinc-900 border border-white/10 relative overflow-hidden group">
-                <video ref={myVideoRef} autoPlay playsInline muted className={`w-full h-full object-cover ${isVideoOff ? 'opacity-0' : 'opacity-100'}`} />
-                {isVideoOff && (
-                    <div className="absolute inset-0 flex items-center justify-center text-zinc-700">
-                        <CameraOff strokeWidth={1} size={24} />
-                    </div>
-                )}
-                <div className="absolute top-2 right-2 flex gap-1">
-                    <div className={`w-1 h-1 ${isMuted ? 'bg-red-500' : 'bg-green-500'}`}></div>
-                </div>
-            </div>
-        </div>
-      </div>
-
-      {/* Main Viewport - Right Side */}
-      <div className="bento-cell md:col-span-3 md:row-span-11 relative bg-zinc-950 flex flex-col">
-        {remoteStream ? (
-            <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full object-contain bg-black" />
-        ) : (
-            <div className="w-full h-full flex flex-col items-center justify-center text-zinc-800 bg-black bg-[radial-gradient(#111_1px,transparent_1px)] [background-size:16px_16px]">
-                <Signal strokeWidth={0.5} size={64} className="mb-4 text-zinc-900" />
-                <p className="font-mono text-xs tracking-[0.2em] text-zinc-700">WAITING FOR SIGNAL</p>
-            </div>
-        )}
-      </div>
-
-      {/* Action Bar - Bottom Right Strip */}
-      <div className="bento-cell md:col-span-3 md:row-span-1 bg-black border-t border-white/10 flex items-center justify-center gap-px">
-        <button 
-            onClick={toggleAudio} 
-            className={`h-full flex-1 flex items-center justify-center hover:bg-white/5 transition-colors group ${isMuted ? 'text-red-500' : 'text-white'}`}
-            title="Toggle Mic"
-        >
-            {isMuted ? <MicOff strokeWidth={1} size={20} /> : <Mic strokeWidth={1} size={20} />}
-        </button>
-        <div className="w-px h-1/2 bg-white/10"></div>
-        <button 
-            onClick={toggleVideo} 
-            className={`h-full flex-1 flex items-center justify-center hover:bg-white/5 transition-colors group ${isVideoOff ? 'text-red-500' : 'text-white'}`}
-            title="Toggle Camera"
-        >
-             {isVideoOff ? <CameraOff strokeWidth={1} size={20} /> : <Camera strokeWidth={1} size={20} />}
-        </button>
-        <div className="w-px h-1/2 bg-white/10"></div>
-        <button 
-            onClick={toggleScreenShare} 
-            className={`h-full flex-1 flex items-center justify-center hover:bg-white/5 transition-colors ${isScreenSharing ? 'text-blue-500' : 'text-white'}`}
-            title="Share Screen"
-        >
-            {isScreenSharing ? <MonitorOff strokeWidth={1} size={20} /> : <Monitor strokeWidth={1} size={20} />}
-        </button>
+  if (isConnected) {
+    // IMMERSIVE MOBILE-FIRST CALL UI
+    return (
+      <div className="relative w-full h-full bg-zinc-950 overflow-hidden">
         
-        {/* End Call is wider and distinct */}
-        <button 
-            onClick={handleEndCall}
-            className="h-full px-8 bg-white text-black hover:bg-red-600 hover:text-white transition-colors flex items-center gap-2 uppercase text-xs tracking-widest font-bold ml-auto"
-        >
-            <PhoneOff size={14} /> End
-        </button>
+        {/* REMOTE VIDEO LAYER */}
+        <div className={`absolute inset-0 transition-opacity duration-300 ${!remoteStatus.isVideoEnabled ? 'opacity-0' : 'opacity-100'}`}>
+             <video 
+               ref={remoteVideoRef} 
+               autoPlay 
+               playsInline 
+               className="w-full h-full object-cover" 
+             />
+        </div>
+
+        {/* REMOTE OFF STATE PLACEHOLDER */}
+        {!remoteStatus.isVideoEnabled && (
+             <div className="absolute inset-0 flex items-center justify-center bg-zinc-900 z-0">
+                 <div className="flex flex-col items-center">
+                     <div className="w-24 h-24 rounded-full bg-zinc-800 flex items-center justify-center mb-4 border border-zinc-700">
+                         <Eye size={32} className="text-zinc-500" />
+                     </div>
+                     <span className="text-zinc-500 font-mono tracking-widest text-sm">VIDEO PAUSED</span>
+                 </div>
+             </div>
+        )}
+
+        {/* SPEAKING INDICATOR (GLOW) */}
+        {isRemoteSpeaking && (
+            <div className="absolute inset-0 pointer-events-none border-4 border-blue-500/30 z-10 transition-all duration-200 shadow-[inset_0_0_100px_rgba(37,99,235,0.2)]"></div>
+        )}
+
+        {/* REMOTE STATUS INDICATORS */}
+        <div className="absolute top-12 md:top-6 left-1/2 -translate-x-1/2 flex gap-2 z-20">
+             {!remoteStatus.isAudioEnabled && (
+                 <div className="px-3 py-1 bg-red-500/90 backdrop-blur rounded-full flex items-center gap-2 shadow-lg">
+                     <MicOff size={12} className="text-white" />
+                     <span className="text-[10px] font-bold text-white tracking-widest">MUTED</span>
+                 </div>
+             )}
+             {isRemoteSpeaking && remoteStatus.isAudioEnabled && (
+                 <div className="px-3 py-1 bg-blue-500/90 backdrop-blur rounded-full flex items-center gap-2 shadow-lg animate-pulse">
+                     <Zap size={12} className="text-white fill-white" />
+                     <span className="text-[10px] font-bold text-white tracking-widest">SPEAKING</span>
+                 </div>
+             )}
+        </div>
+
+        {/* LOCAL VIDEO PIP (MIRRORED) */}
+        <div className="absolute top-4 right-4 w-28 md:w-56 aspect-[9/16] md:aspect-video bg-black border border-white/10 shadow-2xl z-30 overflow-hidden group">
+             <video 
+               ref={myVideoRef} 
+               autoPlay 
+               playsInline 
+               muted 
+               className={`w-full h-full object-cover mirror transition-opacity duration-300 ${isVideoOff ? 'opacity-0' : 'opacity-100'}`} 
+             />
+             <div className="absolute inset-0 bg-black flex items-center justify-center -z-10">
+                 <CameraOff size={20} className="text-zinc-700" />
+             </div>
+             {/* Pip Status */}
+             <div className="absolute bottom-1 right-1 flex gap-1">
+                 {isMuted && <div className="p-1 bg-red-500 rounded"><MicOff size={8} className="text-white" /></div>}
+             </div>
+        </div>
+
+        {/* BOTTOM CONTROLS */}
+        <div className="absolute bottom-8 left-1/2 -translate-x-1/2 flex items-center gap-3 md:gap-6 p-3 md:p-4 bg-black/80 backdrop-blur-md border border-white/10 rounded-2xl z-40 shadow-2xl">
+            <button onClick={toggleAudio} className={`p-4 rounded-xl transition-all active:scale-95 ${isMuted ? 'bg-red-500 text-white shadow-[0_0_15px_rgba(239,68,68,0.5)]' : 'bg-zinc-800 text-white hover:bg-zinc-700'}`}>
+                {isMuted ? <MicOff size={24} /> : <Mic size={24} />}
+            </button>
+            <button onClick={toggleVideo} className={`p-4 rounded-xl transition-all active:scale-95 ${isVideoOff ? 'bg-red-500 text-white shadow-[0_0_15px_rgba(239,68,68,0.5)]' : 'bg-zinc-800 text-white hover:bg-zinc-700'}`}>
+                {isVideoOff ? <CameraOff size={24} /> : <Camera size={24} />}
+            </button>
+            <button onClick={toggleScreenShare} className={`hidden md:block p-4 rounded-xl transition-all active:scale-95 ${isScreenSharing ? 'bg-blue-600 text-white' : 'bg-zinc-800 text-white hover:bg-zinc-700'}`}>
+                {isScreenSharing ? <MonitorOff size={24} /> : <Monitor size={24} />}
+            </button>
+            <div className="w-[1px] h-8 bg-zinc-700 mx-1"></div>
+            <button onClick={handleEndCall} className="p-4 rounded-xl bg-red-600 text-white hover:bg-red-500 transition-all active:scale-95 shadow-lg">
+                <PhoneOff size={24} />
+            </button>
+        </div>
+      </div>
+    );
+  }
+
+  // DASHBOARD LAYOUT (IDLE)
+  return (
+    <div className="w-full h-full bento-grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 grid-rows-6 p-0 md:p-0 gap-[1px]">
+      
+      {/* Identity Card */}
+      <div className="bento-cell col-span-1 row-span-2 md:row-span-6 p-6 md:p-8 flex flex-col justify-center relative overflow-hidden">
+        <div className="absolute top-0 right-0 p-4 opacity-5">
+            <UserPlus size={150} />
+        </div>
+        <div className="relative z-10">
+            <h2 className="text-xs text-blue-500 font-bold font-mono mb-6 uppercase tracking-widest flex items-center gap-2">
+                <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
+                Your Digital ID
+            </h2>
+            <div className="mb-8">
+                <div className="text-3xl md:text-5xl font-thin text-white mb-2 break-all tracking-tighter leading-none">
+                    {peerId ? peerId.substring(0, 6) : '......'}
+                    <span className="text-zinc-800">{peerId ? peerId.substring(6) : ''}</span>
+                </div>
+            </div>
+            
+            <div className="flex flex-col gap-3">
+                <Button variant="secondary" onClick={copyId} className="w-full justify-between group h-14">
+                    <span className="text-xs font-mono">{copied ? 'COPIED TO CLIPBOARD' : 'COPY SECURE ID'}</span>
+                    {copied ? <Check size={16} className="text-green-500" /> : <Copy size={16} className="text-zinc-500 group-hover:text-white transition-colors"/>}
+                </Button>
+            </div>
+        </div>
+      </div>
+
+      {/* Connect Card */}
+      <div className="bento-cell col-span-1 md:col-span-1 lg:col-span-2 row-span-2 md:row-span-3 p-6 md:p-8 flex flex-col justify-center bg-zinc-950">
+         <h2 className="text-xs text-zinc-500 font-bold font-mono mb-6 uppercase tracking-widest">Establish Link</h2>
+         <div className="flex flex-col gap-4 max-w-lg w-full">
+             <div className="relative group">
+                 <input 
+                    type="text" 
+                    placeholder="ENTER REMOTE ID..."
+                    className="w-full bg-black border-b border-zinc-800 p-6 text-white font-mono placeholder:text-zinc-800 focus:border-blue-600 focus:outline-none transition-colors text-xl md:text-2xl"
+                    value={remotePeerIdValue}
+                    onChange={e => setRemotePeerIdValue(e.target.value)}
+                 />
+                 <div className="absolute right-4 top-1/2 -translate-y-1/2 text-zinc-700 group-focus-within:text-blue-600 transition-colors">
+                    <Signal size={20} />
+                 </div>
+             </div>
+             <Button 
+                variant="primary" 
+                size="lg" 
+                className="w-full py-6 mt-4"
+                onClick={() => initiateCall(remotePeerIdValue)} 
+                disabled={!remotePeerIdValue || !peerId}
+            >
+                Connect System
+             </Button>
+         </div>
+      </div>
+
+      {/* Local Preview Card (Idle) */}
+      <div className="bento-cell col-span-1 md:col-span-1 lg:col-span-2 row-span-2 md:row-span-3 relative group overflow-hidden bg-black">
+         <video 
+            ref={myVideoRef} 
+            autoPlay 
+            playsInline 
+            muted 
+            className={`w-full h-full object-cover opacity-60 group-hover:opacity-100 transition-all duration-700 mirror ${isVideoOff ? 'hidden' : 'block'}`} 
+         />
+         
+         {/* Overlay Grid */}
+         <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.03)_1px,transparent_1px)] bg-[size:40px_40px] pointer-events-none"></div>
+
+         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+             {isVideoOff ? (
+                 <div className="flex flex-col items-center gap-4 text-zinc-800">
+                     <CameraOff size={48} strokeWidth={1} />
+                     <span className="font-mono text-xs tracking-widest">SIGNAL LOST</span>
+                 </div>
+             ) : (
+                 <div className="text-white/10 font-thin text-6xl tracking-tighter uppercase select-none">Preview</div>
+             )}
+         </div>
+
+         {/* Mini Controls for Preview */}
+         <div className="absolute bottom-6 right-6 flex gap-2 z-20">
+            <button onClick={toggleVideo} className="p-3 bg-black/50 border border-white/10 text-white hover:bg-white hover:text-black transition-colors backdrop-blur-md">
+                {isVideoOff ? <CameraOff size={18} /> : <Camera size={18} />}
+            </button>
+            <button onClick={toggleAudio} className="p-3 bg-black/50 border border-white/10 text-white hover:bg-white hover:text-black transition-colors backdrop-blur-md">
+                {isMuted ? <MicOff size={18} /> : <Mic size={18} />}
+            </button>
+         </div>
       </div>
     </div>
   );

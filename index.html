@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <title>Nexus Stream</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -22,11 +22,14 @@
         background-color: var(--bg-primary);
         color: var(--text-primary);
         margin: 0;
-        font-family: 'Inter', sans-serif; /* Simulating Satoshi Thin with Inter Light/Thin */
+        font-family: 'Inter', sans-serif;
         font-weight: 200; 
         -webkit-font-smoothing: antialiased;
         -moz-osx-font-smoothing: grayscale;
-        overflow: hidden;
+        overflow: hidden; /* Prevent scroll on body */
+        touch-action: none; /* Disable native touch gestures for app-like feel */
+        height: 100dvh;
+        width: 100vw;
       }
 
       /* Custom Scrollbar - Sharp and minimal */
@@ -62,6 +65,11 @@
       
       .bento-cell {
         background-color: var(--bg-primary);
+      }
+
+      /* Mirror utility for camera */
+      .mirror {
+        transform: scaleX(-1);
       }
     </style>
   <script type="importmap">

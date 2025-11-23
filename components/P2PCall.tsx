@@ -5,7 +5,7 @@ import { Button } from './Button';
 import { 
   Camera, CameraOff, Mic, MicOff, Monitor, PhoneOff, 
   Copy, Signal, MonitorOff, UserPlus, Zap, Check, Eye, Loader2,
-  AlertCircle, Shield, ShieldCheck, Lock, Fingerprint
+  AlertCircle, Shield, ShieldCheck, Lock, Fingerprint, RefreshCcw
 } from 'lucide-react';
 import { SecureProtocolService } from '../services/secureProtocolService';
 import { CryptoIdentity, EphemeralKeys, SecurityContext, HandshakePayload } from '../types';
@@ -63,6 +63,7 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
   
   const localStreamRef = useRef<MediaStream | null>(null);
   const ephemeralKeysRef = useRef<EphemeralKeys | null>(null); // Per-session keys
+  const rotationIntervalRef = useRef<any>(null);
 
   // --- 1. Initialize Peer, Crypto Identity & Local Stream ---
   useEffect(() => {
@@ -141,33 +142,36 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
       peerRef.current?.destroy();
       if (animationRef.current) cancelAnimationFrame(animationRef.current);
       if (audioContextRef.current) audioContextRef.current.close();
+      if (rotationIntervalRef.current) clearInterval(rotationIntervalRef.current);
     };
   }, []);
 
   const setupSecureDataConnection = async (conn: DataConnection, currentIdentity: CryptoIdentity) => {
-      // 1. Generate Ephemeral Keys for this session
+      // 1. Generate Initial Ephemeral Keys
       const ephKeys = await SecureProtocolService.generateEphemeralKeys();
       ephemeralKeysRef.current = ephKeys;
 
       conn.on('open', async () => {
           // 2. Initiate Secure Handshake
-          // We always send our info first when connection opens
           const payload = await SecureProtocolService.createHandshakePayload(
             currentIdentity,
             ephKeys,
             'SECURE_HANDSHAKE_INIT'
           );
           conn.send(payload);
-          
-          // Also send initial status
           conn.send({ type: 'STATUS', video: !isVideoOff, audio: !isMuted });
       });
 
       conn.on('data', async (data: any) => {
-          // --- HANDSHAKE HANDLER ---
-          if (data.type === 'SECURE_HANDSHAKE_INIT' || data.type === 'SECURE_HANDSHAKE_RESP') {
+          // --- HANDSHAKE & ROTATION HANDLER ---
+          if (
+              data.type === 'SECURE_HANDSHAKE_INIT' || 
+              data.type === 'SECURE_HANDSHAKE_RESP' ||
+              data.type === 'SECURE_KEY_ROTATION'
+          ) {
              if (!ephemeralKeysRef.current) return;
              
+             // Verify the signature and re-derive shared secret
              const result = await SecureProtocolService.verifyAndDeriveSession(
                 currentIdentity,
                 ephemeralKeysRef.current,
@@ -175,13 +179,14 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
              );
 
              if (result) {
-               setSecurityContext({
+               setSecurityContext(prev => ({
                  isVerified: true,
                  safetyFingerprint: result.sessionFingerprint,
-                 remoteIdentityFingerprint: result.remoteIdentityFingerprint
-               });
+                 remoteIdentityFingerprint: result.remoteIdentityFingerprint,
+                 lastRotation: Date.now() // Update timestamp on rotation
+               }));
                
-               // If we received INIT, we must respond with RESP to complete the handshake
+               // If INIT, send RESP to complete handshake
                if (data.type === 'SECURE_HANDSHAKE_INIT') {
                   const respPayload = await SecureProtocolService.createHandshakePayload(
                     currentIdentity,
@@ -191,7 +196,7 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
                   conn.send(respPayload);
                }
              } else {
-               setError("SECURITY ALERT: Identity Verification Failed.");
+               setError("SECURITY ALERT: Verification Failed.");
                conn.close();
              }
           }
@@ -204,6 +209,42 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
 
       conn.on('error', (err: any) => console.error("Data connection error", err));
   };
+
+  // --- KEY ROTATION LOGIC ---
+  useEffect(() => {
+    // Start rotation timer only if we are connected and verified
+    if (status === 'connected' && securityContext?.isVerified && currentDataConn?.open && identity) {
+      if (rotationIntervalRef.current) clearInterval(rotationIntervalRef.current);
+
+      rotationIntervalRef.current = setInterval(async () => {
+        try {
+          // 1. Generate NEW Ephemeral Keys
+          const newKeys = await SecureProtocolService.generateEphemeralKeys();
+          ephemeralKeysRef.current = newKeys;
+
+          // 2. Create Rotation Payload (Signed by Long-term Identity)
+          const payload = await SecureProtocolService.createHandshakePayload(
+            identity,
+            newKeys,
+            'SECURE_KEY_ROTATION'
+          );
+
+          // 3. Send
+          currentDataConn.send(payload);
+          
+          // 4. Update UI to show we initiated rotation
+          setSecurityContext(prev => prev ? ({ ...prev, lastRotation: Date.now() }) : null);
+          console.log("Keys rotated securely.");
+        } catch (e) {
+          console.error("Key rotation failed", e);
+        }
+      }, 60000); // 60 seconds
+    }
+
+    return () => {
+      if (rotationIntervalRef.current) clearInterval(rotationIntervalRef.current);
+    };
+  }, [status, securityContext?.isVerified, currentDataConn, identity]);
 
   const handleCallSetup = (call: MediaConnection) => {
       setStatus('connected');
@@ -248,7 +289,6 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
         setError(null);
       } catch (err: any) {
         console.error("Failed local stream", err);
-        // Error handling omitted for brevity, logic same as before
       }
     };
     initLocalVideo();
@@ -385,6 +425,7 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
     setSecurityContext(null); // Reset security context
     setShowFingerprint(false);
     if (animationRef.current) cancelAnimationFrame(animationRef.current);
+    if (rotationIntervalRef.current) clearInterval(rotationIntervalRef.current);
     onEndCall();
   };
 
@@ -441,6 +482,16 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
                 {securityContext?.isVerified ? 'E2EE VERIFIED' : 'VERIFYING...'}
               </span>
            </div>
+
+           {/* KEY ROTATION INDICATOR */}
+           {securityContext?.lastRotation && (
+             <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-black/40 border border-white/5 backdrop-blur-md text-zinc-400 animate-in fade-in slide-in-from-left-2">
+                <RefreshCcw size={10} />
+                <span className="text-[9px] font-mono tracking-wider">
+                  KEYS ROTATED {Math.floor((Date.now() - securityContext.lastRotation) / 1000)}s AGO
+                </span>
+             </div>
+           )}
 
            {/* FINGERPRINT MODAL / POPUP */}
            {showFingerprint && securityContext && (

@@ -28,7 +28,7 @@ export interface EphemeralKeys {
 }
 
 export interface HandshakePayload {
-  type: 'SECURE_HANDSHAKE_INIT' | 'SECURE_HANDSHAKE_RESP';
+  type: 'SECURE_HANDSHAKE_INIT' | 'SECURE_HANDSHAKE_RESP' | 'SECURE_KEY_ROTATION';
   identityPublicKey: JsonWebKey; // Long-term Identity
   ephemeralPublicKey: JsonWebKey; // Session Key
   signature: string; // Base64 signature of the ephemeral key signed by identity key
@@ -40,4 +40,5 @@ export interface SecurityContext {
   safetyFingerprint: string; // The "Safety Number" to show UI
   remoteIdentityFingerprint: string;
   sessionSecret?: CryptoKey;
+  lastRotation?: number;
 }

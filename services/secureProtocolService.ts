@@ -80,7 +80,7 @@ export class SecureProtocolService {
   static async createHandshakePayload(
     identity: CryptoIdentity, 
     ephemeralKey: EphemeralKeys,
-    type: 'SECURE_HANDSHAKE_INIT' | 'SECURE_HANDSHAKE_RESP'
+    type: 'SECURE_HANDSHAKE_INIT' | 'SECURE_HANDSHAKE_RESP' | 'SECURE_KEY_ROTATION'
   ): Promise<HandshakePayload> {
     const ephPubJwk = await window.crypto.subtle.exportKey('jwk', ephemeralKey.publicKey);
     const idPubJwk = await window.crypto.subtle.exportKey('jwk', identity.publicKey);

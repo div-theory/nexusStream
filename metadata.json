@@ -1,6 +1,6 @@
 {
-  "name": "Nexus Stream",
-  "description": "Secure, peer-to-peer video and voice calling application with screen sharing capabilities.",
+  "name": "Talkr",
+  "description": "Private, encrypted peer-to-peer video and voice.",
   "requestFramePermissions": [
     "camera",
     "microphone"

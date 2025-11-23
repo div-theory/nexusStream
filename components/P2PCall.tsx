@@ -3,11 +3,11 @@ import Peer from 'peerjs';
 import { Button } from './Button';
 import { 
   Camera, CameraOff, Mic, MicOff, Monitor, PhoneOff, 
-  Copy, Signal, MonitorOff, UserPlus, Zap, Check, Eye, Loader2,
-  AlertCircle, Shield, ShieldCheck, Lock, Fingerprint, RefreshCcw
+  Copy, ArrowRight, MonitorOff, Check, Eye, Loader2,
+  AlertCircle, ShieldCheck, Lock, Fingerprint, RefreshCcw, User
 } from 'lucide-react';
 import { SecureProtocolService } from '../services/secureProtocolService';
-import { TurnService } from '../services/turnService'; // NEW IMPORT
+import { TurnService } from '../services/turnService';
 import { CryptoIdentity, EphemeralKeys, SecurityContext, HandshakePayload } from '../types';
 
 // Types for PeerJS components to avoid strict build errors
@@ -569,7 +569,7 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
       return (
           <div className="w-full h-full flex items-center justify-center bg-zinc-950 flex-col gap-4">
               <Loader2 className="animate-spin text-blue-600" size={32} />
-              <div className="text-zinc-500 font-mono text-xs uppercase tracking-widest">Initializing Secure Node...</div>
+              <div className="text-zinc-500 font-mono text-xs uppercase tracking-widest">Booting Talkr Node...</div>
           </div>
       );
   }
@@ -596,9 +596,9 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
         )}
         
         {/* CALL TIMER - CENTERED TOP */}
-        <div className="absolute top-6 left-1/2 -translate-x-1/2 z-20 px-4 py-1.5 rounded-full bg-black/40 border border-white/5 backdrop-blur-md flex items-center gap-2">
-            <div className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
-            <span className="text-sm font-mono tracking-widest text-white/90">
+        <div className="absolute top-6 left-1/2 -translate-x-1/2 z-20 px-6 py-2 rounded-full bg-black border border-white/20 backdrop-blur-md flex items-center gap-3 shadow-xl">
+            <div className="w-2 h-2 rounded-full bg-red-600 animate-pulse" />
+            <span className="text-lg font-mono font-bold tracking-widest text-white">
                 {formatDuration(callDuration)}
             </span>
         </div>
@@ -606,63 +606,60 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
         {/* SECURITY BADGE OVERLAY */}
         <div className="absolute top-6 left-6 z-20 flex flex-col gap-2">
            <div 
-             className={`flex items-center gap-2 px-3 py-1.5 rounded-full backdrop-blur-md border ${securityContext?.isVerified ? 'bg-green-500/20 border-green-500/50 text-green-400' : 'bg-yellow-500/20 border-yellow-500/50 text-yellow-400'} cursor-pointer hover:bg-black/80 transition-colors`}
+             className={`flex items-center gap-2 px-4 py-2 rounded-full backdrop-blur-md border ${securityContext?.isVerified ? 'bg-black/80 border-green-500/50 text-green-400' : 'bg-black/80 border-yellow-500/50 text-yellow-400'} cursor-pointer hover:bg-zinc-900 transition-colors shadow-lg`}
              onClick={() => setShowFingerprint(!showFingerprint)}
            >
-              {securityContext?.isVerified ? <ShieldCheck size={14} /> : <Lock size={14} className="animate-pulse"/>}
+              {securityContext?.isVerified ? <ShieldCheck size={16} /> : <Lock size={16} className="animate-pulse"/>}
               <span className="text-[10px] font-mono font-bold tracking-widest uppercase">
-                {securityContext?.isVerified ? 'E2EE VERIFIED' : 'VERIFYING...'}
+                {securityContext?.isVerified ? 'ENCRYPTED' : 'HANDSHAKE...'}
               </span>
            </div>
 
            {/* KEY ROTATION INDICATOR */}
            {securityContext?.lastRotation && (
-             <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-black/40 border border-white/5 backdrop-blur-md text-zinc-400 animate-in fade-in slide-in-from-left-2">
+             <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-black/60 border border-white/10 backdrop-blur-md text-zinc-500 animate-in fade-in slide-in-from-left-2">
                 <RefreshCcw size={10} />
                 <span className="text-[9px] font-mono tracking-wider">
-                  KEYS ROTATED {Math.floor((Date.now() - securityContext.lastRotation) / 1000)}s AGO
+                  ROTATED {Math.floor((Date.now() - securityContext.lastRotation) / 1000)}s AGO
                 </span>
              </div>
            )}
 
-           {/* FINGERPRINT MODAL / POPUP */}
+           {/* FINGERPRINT MODAL */}
            {showFingerprint && securityContext && (
-             <div className="mt-2 p-4 bg-black/90 border border-white/10 backdrop-blur-xl rounded-lg shadow-2xl max-w-xs animate-in fade-in slide-in-from-top-2">
-                <div className="flex items-center gap-2 mb-3 text-zinc-400">
+             <div className="mt-2 p-5 bg-black border border-zinc-800 rounded-none shadow-2xl max-w-xs animate-in fade-in slide-in-from-top-2">
+                <div className="flex items-center gap-2 mb-4 text-zinc-500">
                   <Fingerprint size={16} />
-                  <span className="text-xs font-mono uppercase tracking-widest">Safety Number</span>
+                  <span className="text-xs font-mono uppercase tracking-widest">Verification Key</span>
                 </div>
-                <div className="grid grid-cols-4 gap-2 font-mono text-xl md:text-2xl text-white tracking-tighter mb-4">
+                <div className="grid grid-cols-4 gap-2 font-mono text-xl text-white tracking-tighter mb-4">
                   {securityContext.safetyFingerprint.split(' ').map((block, i) => (
-                    <span key={i} className="bg-white/5 p-1 rounded text-center">{block}</span>
+                    <span key={i} className="bg-zinc-900 p-1 text-center border border-zinc-800">{block}</span>
                   ))}
                 </div>
-                <div className="text-[10px] text-zinc-500 leading-relaxed">
-                  Verify this number matches on your friend's device to ensure no intruders.
+                <div className="text-[10px] text-zinc-600 leading-relaxed uppercase">
+                  Compare this key with your peer to verify integrity.
                 </div>
              </div>
            )}
         </div>
 
         {/* PIP */}
-        <div className="absolute top-4 right-4 w-28 md:w-56 aspect-[9/16] md:aspect-video bg-black border border-white/10 shadow-2xl z-30 overflow-hidden group">
+        <div className="absolute top-4 right-4 w-28 md:w-48 aspect-[9/16] bg-black border border-zinc-800 shadow-2xl z-30 overflow-hidden group">
              <video ref={myVideoRef} autoPlay playsInline muted className={`w-full h-full object-cover mirror transition-opacity duration-300 ${isVideoOff ? 'opacity-0' : 'opacity-100'}`} />
-             <div className="absolute inset-0 bg-black flex items-center justify-center -z-10"><CameraOff size={20} className="text-zinc-700" /></div>
+             <div className="absolute inset-0 bg-black flex items-center justify-center -z-10"><CameraOff size={20} className="text-zinc-800" /></div>
         </div>
 
         {/* CONTROLS */}
-        <div className="absolute bottom-8 left-1/2 -translate-x-1/2 flex items-center gap-3 md:gap-6 p-3 md:p-4 bg-black/80 backdrop-blur-md border border-white/10 rounded-2xl z-40 shadow-2xl safe-pb">
-            <button onClick={toggleAudio} className={`p-4 rounded-xl transition-all active:scale-95 ${isMuted ? 'bg-red-500 text-white' : 'bg-zinc-800 text-white hover:bg-zinc-700'}`}>
+        <div className="absolute bottom-10 left-1/2 -translate-x-1/2 flex items-center gap-4 md:gap-8 p-4 md:p-6 bg-black border border-zinc-800 rounded-none z-40 shadow-2xl safe-pb">
+            <button onClick={toggleAudio} className={`p-4 rounded-full transition-all active:scale-95 ${isMuted ? 'bg-red-600 text-white' : 'bg-white text-black hover:bg-zinc-200'}`}>
                 {isMuted ? <MicOff size={24} /> : <Mic size={24} />}
             </button>
-            <button onClick={toggleVideo} className={`p-4 rounded-xl transition-all active:scale-95 ${isVideoOff ? 'bg-red-500 text-white' : 'bg-zinc-800 text-white hover:bg-zinc-700'}`}>
+            <button onClick={toggleVideo} className={`p-4 rounded-full transition-all active:scale-95 ${isVideoOff ? 'bg-red-600 text-white' : 'bg-white text-black hover:bg-zinc-200'}`}>
                 {isVideoOff ? <CameraOff size={24} /> : <Camera size={24} />}
             </button>
-            <button onClick={toggleScreenShare} className={`hidden md:block p-4 rounded-xl transition-all active:scale-95 ${isScreenSharing ? 'bg-blue-600 text-white' : 'bg-zinc-800 text-white hover:bg-zinc-700'}`}>
-                {isScreenSharing ? <MonitorOff size={24} /> : <Monitor size={24} />}
-            </button>
-            <div className="w-[1px] h-8 bg-zinc-700 mx-1"></div>
-            <button onClick={handleEndCall} className="p-4 rounded-xl bg-red-600 text-white hover:bg-red-500 transition-all active:scale-95 shadow-lg">
+            <div className="w-px h-10 bg-zinc-800 mx-2"></div>
+            <button onClick={handleEndCall} className="p-4 rounded-full bg-red-600 text-white hover:bg-red-500 transition-all active:scale-95 shadow-lg">
                 <PhoneOff size={24} />
             </button>
         </div>
@@ -670,20 +667,21 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
     );
   }
 
-  // DASHBOARD
+  // DASHBOARD - BENTO GRID LAYOUT
   return (
     <div className="w-full h-full bento-grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 md:grid-rows-6 p-0 gap-[1px] auto-rows-fr">
       
       {/* Identity Card */}
-      <div className="bento-cell col-span-1 row-span-2 md:row-span-6 p-6 md:p-8 flex flex-col justify-center relative overflow-hidden min-h-[300px]">
-        <div className="absolute top-0 right-0 p-4 opacity-5"><UserPlus size={150} /></div>
-        <div className="relative z-10">
-            <h2 className="text-xs text-blue-500 font-bold font-mono mb-6 uppercase tracking-widest flex items-center gap-2">
-                <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
-                Digital ID
+      <div className="bento-cell col-span-1 row-span-2 md:row-span-6 p-8 md:p-12 flex flex-col justify-center relative overflow-hidden min-h-[300px]">
+        <div className="absolute -top-10 -right-10 p-0 opacity-[0.03]"><User size={400} /></div>
+        <div className="relative z-10 flex flex-col h-full justify-center">
+            <h2 className="text-xs text-blue-600 font-bold font-mono mb-8 uppercase tracking-[0.2em] flex items-center gap-2">
+                <div className="w-2 h-2 bg-blue-600 rounded-none"></div>
+                My Signal
             </h2>
-            <div className="mb-4">
-                <div className="text-3xl md:text-5xl font-thin text-white mb-2 break-all tracking-tighter leading-none">
+            
+            <div className="mb-8">
+                <div className="text-4xl md:text-6xl font-black text-white mb-2 break-all tracking-tighter leading-[0.9]">
                     {peerId ? peerId.substring(0, 6) : '......'}
                     <span className="text-zinc-800">{peerId ? peerId.substring(6) : ''}</span>
                 </div>
@@ -691,83 +689,83 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
             
             {/* Identity Fingerprint Display */}
             {identity && (
-              <div className="mb-8 p-3 bg-zinc-900/50 border border-zinc-800/50 rounded flex items-center gap-3">
-                 <Fingerprint size={16} className="text-zinc-600"/>
+              <div className="mb-10 p-4 bg-zinc-950 border border-zinc-900 flex items-center gap-4">
+                 <Fingerprint size={20} className="text-zinc-700"/>
                  <div className="flex flex-col">
-                   <span className="text-[10px] text-zinc-500 font-mono uppercase">Your Public Fingerprint</span>
-                   <span className="text-xs text-zinc-400 font-mono tracking-widest">{identity.publicKeyFingerprint}</span>
+                   <span className="text-[9px] text-zinc-600 font-mono uppercase tracking-widest mb-1">Public Key Hash</span>
+                   <span className="text-xs text-zinc-500 font-mono tracking-widest">{identity.publicKeyFingerprint}</span>
                  </div>
               </div>
             )}
             
-            <div className="flex flex-col gap-3">
-                <Button variant="secondary" onClick={copyId} className="w-full justify-between group h-14">
-                    <span className="text-xs font-mono">{copied ? 'COPIED' : 'COPY SECURE ID'}</span>
-                    {copied ? <Check size={16} className="text-green-500" /> : <Copy size={16} className="text-zinc-500 group-hover:text-white"/>}
+            <div className="mt-auto">
+                <Button variant="secondary" onClick={copyId} className="w-full justify-between group h-16 border-zinc-800 hover:border-white hover:bg-white hover:text-black transition-all">
+                    <span className="text-sm font-mono tracking-widest uppercase pl-2">{copied ? 'COPIED TO CLIPBOARD' : 'COPY ID'}</span>
+                    {copied ? <Check size={20} className="text-green-600" /> : <Copy size={20} className="text-zinc-500 group-hover:text-black"/>}
                 </Button>
             </div>
         </div>
       </div>
 
       {/* Connect Card */}
-      <div className="bento-cell col-span-1 md:col-span-1 lg:col-span-2 row-span-2 md:row-span-3 p-6 md:p-8 flex flex-col justify-center bg-zinc-950 min-h-[250px]">
-         <h2 className="text-xs text-zinc-500 font-bold font-mono mb-6 uppercase tracking-widest">Establish Link</h2>
-         <div className="flex flex-col gap-4 max-w-lg w-full">
+      <div className="bento-cell col-span-1 md:col-span-1 lg:col-span-2 row-span-2 md:row-span-3 p-8 md:p-12 flex flex-col justify-center bg-zinc-950 min-h-[300px]">
+         <h2 className="text-xs text-zinc-600 font-bold font-mono mb-8 uppercase tracking-[0.2em]">Dial</h2>
+         <div className="flex flex-col gap-0 max-w-2xl w-full">
              <div className="relative group">
                  <input 
                     type="text" 
-                    placeholder="ENTER REMOTE ID..."
-                    className="w-full bg-black border-b border-zinc-800 p-6 text-white font-mono placeholder:text-zinc-800 focus:border-blue-600 focus:outline-none transition-colors text-xl md:text-2xl"
+                    placeholder="ENTER ID"
+                    className="w-full bg-transparent border-b-2 border-zinc-800 py-6 text-white font-black placeholder:text-zinc-900 focus:border-blue-600 focus:outline-none transition-colors text-4xl md:text-6xl tracking-tighter uppercase"
                     value={remotePeerIdValue}
                     onChange={e => setRemotePeerIdValue(e.target.value)}
                  />
-                 <div className="absolute right-4 top-1/2 -translate-y-1/2 text-zinc-700 group-focus-within:text-blue-600 transition-colors">
-                    <Signal size={20} />
-                 </div>
              </div>
-             <Button 
-                variant="primary" 
-                size="lg" 
-                className="w-full py-6 mt-4"
-                onClick={() => initiateCall(remotePeerIdValue)} 
-                disabled={!remotePeerIdValue || !peerId}
-            >
-                Connect System
-             </Button>
+             <div className="flex justify-end mt-8">
+                <Button 
+                    variant="primary" 
+                    size="lg" 
+                    className="py-6 px-8 bg-blue-600 border-blue-600 hover:bg-blue-500 hover:border-blue-500 text-white w-auto flex gap-4 items-center group disabled:opacity-50 disabled:cursor-not-allowed"
+                    onClick={() => initiateCall(remotePeerIdValue)} 
+                    disabled={!remotePeerIdValue || !peerId}
+                >
+                    <span className="tracking-widest font-bold">CONNECT</span>
+                    <ArrowRight size={20} className="group-hover:translate-x-1 transition-transform" />
+                </Button>
+             </div>
          </div>
       </div>
 
       {/* Local Preview Card */}
-      <div className="bento-cell col-span-1 md:col-span-1 lg:col-span-2 row-span-2 md:row-span-3 relative group overflow-hidden bg-black min-h-[250px]">
-         <video ref={myVideoRef} autoPlay playsInline muted className={`w-full h-full object-cover opacity-60 group-hover:opacity-100 transition-all duration-700 mirror ${isVideoOff ? 'hidden' : 'block'}`} />
+      <div className="bento-cell col-span-1 md:col-span-1 lg:col-span-2 row-span-2 md:row-span-3 relative group overflow-hidden bg-black min-h-[250px] border-t border-zinc-900 md:border-t-0">
+         <video ref={myVideoRef} autoPlay playsInline muted className={`w-full h-full object-cover opacity-50 group-hover:opacity-80 transition-all duration-700 mirror ${isVideoOff ? 'hidden' : 'block'}`} />
          
          {error && (
-             <div className="absolute inset-0 bg-black/80 flex items-center justify-center p-6 z-20">
+             <div className="absolute inset-0 bg-black/90 flex items-center justify-center p-8 z-20">
                  <div className="flex flex-col items-center text-center">
-                    <AlertCircle size={32} className="text-red-500 mb-2" />
-                    <span className="text-red-500 font-mono text-xs max-w-sm">{error}</span>
-                    {error.includes("use") && <Button variant="ghost" onClick={() => window.location.reload()} className="mt-4">Reload</Button>}
+                    <AlertCircle size={40} className="text-red-600 mb-4" />
+                    <span className="text-red-500 font-mono text-xs uppercase tracking-widest max-w-md leading-relaxed">{error}</span>
+                    {error.includes("use") && <Button variant="ghost" onClick={() => window.location.reload()} className="mt-6 border border-zinc-800 text-zinc-400">System Reload</Button>}
                  </div>
              </div>
          )}
          
          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
              {isVideoOff && !error ? (
-                 <div className="flex flex-col items-center gap-4 text-zinc-800">
-                     <CameraOff size={48} strokeWidth={1} />
-                     <span className="font-mono text-xs tracking-widest">SIGNAL LOST</span>
+                 <div className="flex flex-col items-center gap-6 text-zinc-800">
+                     <CameraOff size={64} strokeWidth={1} />
+                     <span className="font-mono text-xs tracking-[0.3em] uppercase">Camera Disabled</span>
                  </div>
              ) : (
-                 !error && <div className="text-white/10 font-thin text-6xl tracking-tighter uppercase select-none">Preview</div>
+                 !error && <div className="text-white/5 font-black text-8xl tracking-tighter uppercase select-none">Preview</div>
              )}
          </div>
 
-         <div className="absolute bottom-6 right-6 flex gap-2 z-20">
-            <button onClick={toggleVideo} className="p-3 bg-black/50 border border-white/10 text-white hover:bg-white hover:text-black transition-colors backdrop-blur-md">
-                {isVideoOff ? <CameraOff size={18} /> : <Camera size={18} />}
+         <div className="absolute bottom-8 right-8 flex gap-3 z-20">
+            <button onClick={toggleVideo} className="p-4 bg-black border border-zinc-800 text-white hover:bg-white hover:text-black transition-colors">
+                {isVideoOff ? <CameraOff size={20} /> : <Camera size={20} />}
             </button>
-            <button onClick={toggleAudio} className="p-3 bg-black/50 border border-white/10 text-white hover:bg-white hover:text-black transition-colors backdrop-blur-md">
-                {isMuted ? <MicOff size={18} /> : <Mic size={18} />}
+            <button onClick={toggleAudio} className="p-4 bg-black border border-zinc-800 text-white hover:bg-white hover:text-black transition-colors">
+                {isMuted ? <MicOff size={20} /> : <Mic size={20} />}
             </button>
          </div>
       </div>

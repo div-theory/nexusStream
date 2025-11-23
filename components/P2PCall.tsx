@@ -76,13 +76,18 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
       try {
         const PeerClass = (Peer as any).default || Peer;
         peer = new PeerClass(undefined, {
-          debug: 1,
+          debug: 2,
           secure: true, // Force secure connection for Vercel/HTTPS
+          pingInterval: 5000, // Keep socket alive on mobile
           config: {
             iceServers: [
               { urls: 'stun:stun.l.google.com:19302' },
-              { urls: 'stun:global.stun.twilio.com:3478' }
-            ]
+              { urls: 'stun:stun1.l.google.com:19302' },
+              { urls: 'stun:stun2.l.google.com:19302' },
+              { urls: 'stun:stun3.l.google.com:19302' },
+              { urls: 'stun:stun4.l.google.com:19302' },
+            ],
+            iceCandidatePoolSize: 10,
           }
         });
       } catch (e) {
@@ -104,17 +109,26 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
         } else if (err.type === 'unavailable-id' || err.type === 'invalid-id' || err.type === 'browser-incompatible') {
             setError(`Connection Error: ${err.type}`);
         } else if (err.type === 'network') {
-            setError("Network error. Please check your internet connection.");
+            setError("Network error. NAT traversal failed. Try different network.");
         }
       });
 
       peer.on('call', (call: MediaConnection) => {
+        // Fix: If we are already in a call, reject or handle appropriately
+        if (currentCall) {
+            call.close();
+            return;
+        }
+
         const currentStream = localStreamRef.current;
         if (currentStream) {
           call.answer(currentStream);
           handleCallSetup(call);
         } else {
-          navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: true })
+          navigator.mediaDevices.getUserMedia({ 
+            video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } }, 
+            audio: true 
+          })
             .then((mediaStream) => {
               setStream(mediaStream);
               localStreamRef.current = mediaStream;
@@ -288,7 +302,7 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
     const initLocalVideo = async () => {
       try {
         const mediaStream = await navigator.mediaDevices.getUserMedia({ 
-            video: { facingMode: 'user' }, 
+            video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } }, 
             audio: true 
         });
         setStream(mediaStream);

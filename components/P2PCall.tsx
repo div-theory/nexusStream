@@ -4,7 +4,7 @@ import { Button } from './Button';
 import { 
   Camera, CameraOff, Mic, MicOff, PhoneOff, 
   Copy, ArrowRight, Check, Eye, Loader2,
-  AlertCircle, ShieldCheck, Lock, Fingerprint, RefreshCcw, User
+  AlertCircle, ShieldCheck, Lock, Fingerprint, RefreshCcw, User, Zap
 } from 'lucide-react';
 import { SecureProtocolService } from '../services/secureProtocolService';
 import { TurnService } from '../services/turnService';
@@ -37,7 +37,7 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
   
   // Local State
   const [isMuted, setIsMuted] = useState(false);
-  const [isVideoOff, setIsVideoOff] = useState(false);
+  const [isVideoOff, setIsVideoOff] = useState(true); // Default to VOICE ONLY (Camera Off)
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   
@@ -86,7 +86,6 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
       setIdentity(id);
 
       // 2. Fetch ICE Servers (TURN/STUN)
-      // Generates a random temp ID for fetching creds if needed before we have a real Peer ID
       const tempId = Math.random().toString(36).substring(7);
       const iceServers = await TurnService.getIceServers(tempId);
 
@@ -119,9 +118,7 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
       // --- CRITICAL: AUTO RECONNECT ---
       peer.on('disconnected', () => {
         console.warn("PeerJS: Disconnected from signaling server. Reconnecting...");
-        // Auto-reconnect if not destroyed
         if (peer && !peer.destroyed) {
-            // Short timeout to allow network to stabilize
             setTimeout(() => {
                 if (peer && !peer.destroyed) peer.reconnect();
             }, 1000);
@@ -135,7 +132,6 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
 
       peer.on('error', (err: any) => {
         console.error("PeerJS Error:", err);
-        // Handle "Lost connection to server" gracefully
         if (err.type === 'network' || err.message?.includes('Lost connection')) {
              console.log("Transient network error. Attempting recovery...");
              return; 
@@ -150,7 +146,6 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
       });
 
       peer.on('call', (call: MediaConnection) => {
-        // Fix: If we are already in a call, reject or handle appropriately
         if (currentCall) {
             call.close();
             return;
@@ -165,11 +160,12 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
         if (currentStream && currentStream.active) {
           answerCall(currentStream);
         } else {
-          // Fallback if no local stream yet
           getMobileFriendlyStream()
             .then((mediaStream) => {
               setStream(mediaStream);
               localStreamRef.current = mediaStream;
+              // Ensure track state matches UI state immediately on answer
+              mediaStream.getVideoTracks().forEach(t => t.enabled = !isVideoOff);
               answerCall(mediaStream);
             })
             .catch(err => {
@@ -181,7 +177,7 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
 
       peer.on('connection', (conn: DataConnection) => {
          setCurrentDataConn(conn);
-         setupSecureDataConnection(conn, id); // Pass identity
+         setupSecureDataConnection(conn, id); 
       });
 
       peerRef.current = peer;
@@ -224,12 +220,10 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
   };
 
   const setupSecureDataConnection = async (conn: DataConnection, currentIdentity: CryptoIdentity) => {
-      // 1. Generate Initial Ephemeral Keys
       const ephKeys = await SecureProtocolService.generateEphemeralKeys();
       ephemeralKeysRef.current = ephKeys;
 
       conn.on('open', async () => {
-          // 2. Initiate Secure Handshake
           const payload = await SecureProtocolService.createHandshakePayload(
             currentIdentity,
             ephKeys,
@@ -242,7 +236,6 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
       });
 
       conn.on('data', async (data: any) => {
-          // --- HANDSHAKE & ROTATION HANDLER ---
           if (
               data.type === 'SECURE_HANDSHAKE_INIT' || 
               data.type === 'SECURE_HANDSHAKE_RESP' ||
@@ -250,7 +243,6 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
           ) {
              if (!ephemeralKeysRef.current) return;
              
-             // Verify the signature and re-derive shared secret
              const result = await SecureProtocolService.verifyAndDeriveSession(
                 currentIdentity,
                 ephemeralKeysRef.current,
@@ -262,10 +254,9 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
                  isVerified: true,
                  safetyFingerprint: result.sessionFingerprint,
                  remoteIdentityFingerprint: result.remoteIdentityFingerprint,
-                 lastRotation: Date.now() // Update timestamp on rotation
+                 lastRotation: Date.now()
                }));
                
-               // If INIT, send RESP to complete handshake
                if (data.type === 'SECURE_HANDSHAKE_INIT') {
                   const respPayload = await SecureProtocolService.createHandshakePayload(
                     currentIdentity,
@@ -280,7 +271,6 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
              }
           }
 
-          // --- STATUS HANDLER ---
           if (data.type === 'STATUS') {
              setRemoteStatus({ isVideoEnabled: data.video, isAudioEnabled: data.audio });
           }
@@ -289,9 +279,7 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
       conn.on('error', (err: any) => console.error("Data connection error", err));
   };
 
-  // --- KEY ROTATION LOGIC ---
   useEffect(() => {
-    // Start rotation timer only if we are connected and verified
     if (status === 'connected' && securityContext?.isVerified && currentDataConn?.open && identity) {
       if (rotationIntervalRef.current) clearInterval(rotationIntervalRef.current);
 
@@ -301,28 +289,21 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
              console.warn("Skipping rotation: Connection closed");
              return;
           }
-
-          // 1. Generate NEW Ephemeral Keys
           const newKeys = await SecureProtocolService.generateEphemeralKeys();
           ephemeralKeysRef.current = newKeys;
 
-          // 2. Create Rotation Payload (Signed by Long-term Identity)
           const payload = await SecureProtocolService.createHandshakePayload(
             identity,
             newKeys,
             'SECURE_KEY_ROTATION'
           );
 
-          // 3. Send
           currentDataConn.send(payload);
-          
-          // 4. Update UI to show we initiated rotation
           setSecurityContext(prev => prev ? ({ ...prev, lastRotation: Date.now() }) : null);
-          console.log("Keys rotated securely.");
         } catch (e) {
           console.error("Key rotation failed", e);
         }
-      }, 60000); // 60 seconds
+      }, 60000); 
     }
 
     return () => {
@@ -339,13 +320,11 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
       call.on('close', () => handleEndCall());
       call.on('error', (e: any) => {
           console.error("Call error", e);
-          // Only show error if call wasn't manually ended
           if (status === 'connected') setError("Call connection interrupted.");
       });
       setCurrentCall(call);
   };
 
-  // --- STREAM ATTACHMENT EFFECT ---
   useEffect(() => {
     if (myVideoRef.current && stream) {
         myVideoRef.current.srcObject = stream;
@@ -361,45 +340,39 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
   }, [remoteStream, status]);
 
 
-  // Robust Helper for Mobile Streams with Delay
   const getMobileFriendlyStream = async (): Promise<MediaStream> => {
      try {
-       // Stop any existing tracks first
        stopLocalStream();
-       
-       // Try specific mobile constraints first
-       console.log("Requesting camera: User facing mode...");
        return await navigator.mediaDevices.getUserMedia({ 
            video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } }, 
            audio: true 
        });
      } catch (err) {
        console.warn("Specific constraints failed.", err);
-       
-       // CRITICAL FIX: Wait 500ms to allow hardware to release the failed request
        await new Promise(resolve => setTimeout(resolve, 500));
-
-       console.log("Retrying with generic constraints...");
        return await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
      }
   };
 
-  // Initialize Local Video Preview
   useEffect(() => {
     const initLocalVideo = async () => {
-      // If we already have a stream, don't request again
       if (localStreamRef.current || isRequestingStream.current) return;
-      
       isRequestingStream.current = true;
       
       try {
         const mediaStream = await getMobileFriendlyStream();
         setStream(mediaStream);
         localStreamRef.current = mediaStream;
+        
+        // --- SYNC WITH DEFAULT UI STATE ---
+        // If isVideoOff is true by default, disable track immediately
+        mediaStream.getVideoTracks().forEach(track => {
+            track.enabled = !isVideoOff;
+        });
+        
         setError(null);
       } catch (err: any) {
         console.error("Failed local stream", err);
-        
         if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
              setError("Camera is in use by another app. Please close other tabs/apps and reload.");
         } else if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
@@ -413,14 +386,8 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
     };
     
     initLocalVideo();
-    
-    return () => {
-      // Don't stop stream on simple re-renders, only if component truly unmounts
-      // stopLocalStream(); 
-    };
-  }, []);
-
-  // --- LOGIC ---
+    return () => {};
+  }, []); // Run once on mount
 
   const initiateCall = (remoteId: string) => {
     const currentStream = localStreamRef.current;
@@ -510,34 +477,6 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
     }
   };
 
-  const toggleScreenShare = async () => {
-    if (isScreenSharing) {
-      try {
-        const newStream = await navigator.mediaDevices.getUserMedia({ video: !isVideoOff, audio: true });
-        replaceStream(newStream);
-        setIsScreenSharing(false);
-      } catch (e) { console.error(e); }
-    } else {
-      try {
-        const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
-        replaceStream(screenStream);
-        setIsScreenSharing(true);
-        screenStream.getVideoTracks()[0].onended = () => toggleScreenShare();
-      } catch (e) { console.error(e); }
-    }
-  };
-
-  const replaceStream = (newStream: MediaStream) => {
-    if (stream) stream.getVideoTracks().forEach(t => t.stop());
-    setStream(newStream);
-    localStreamRef.current = newStream;
-    if (currentCall && currentCall.peerConnection) {
-        const senders = currentCall.peerConnection.getSenders();
-        const videoSender = senders.find((s: RTCRtpSender) => s.track?.kind === 'video');
-        if (videoSender) videoSender.replaceTrack(newStream.getVideoTracks()[0]);
-    }
-  };
-
   const handleEndCall = () => {
     currentCall?.close();
     currentDataConn?.close();
@@ -546,7 +485,7 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
     setRemoteStream(null);
     setStatus('idle');
     setRemoteStatus({ isVideoEnabled: true, isAudioEnabled: true });
-    setSecurityContext(null); // Reset security context
+    setSecurityContext(null);
     setShowFingerprint(false);
     if (animationRef.current) cancelAnimationFrame(animationRef.current);
     if (rotationIntervalRef.current) clearInterval(rotationIntervalRef.current);
@@ -560,8 +499,6 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
         setTimeout(() => setCopied(false), 2000);
     }
   };
-
-  // --- RENDER ---
 
   const isConnected = status === 'connected' || status === 'calling';
 
@@ -579,30 +516,21 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
       <div className="relative w-full h-full bg-zinc-950 overflow-hidden">
         
         {/* REMOTE VIDEO */}
-        <div className={`absolute inset-0 transition-opacity duration-300 ${!remoteStatus.isVideoEnabled ? 'opacity-0' : 'opacity-100'}`}>
+        <div className={`absolute inset-0 transition-opacity duration-700 ease-[cubic-bezier(0.19,1,0.22,1)] ${!remoteStatus.isVideoEnabled ? 'opacity-0' : 'opacity-100'}`}>
              <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full object-cover" />
         </div>
 
-        {/* REMOTE OFF STATE */}
-        {!remoteStatus.isVideoEnabled && (
-             <div className="absolute inset-0 flex items-center justify-center bg-zinc-900 z-0">
-                 <div className="flex flex-col items-center">
-                     <div className="w-24 h-24 rounded-full bg-zinc-800 flex items-center justify-center mb-4 border border-zinc-700">
-                         <Eye size={32} className="text-zinc-500" />
-                     </div>
-                     <span className="text-zinc-500 font-mono tracking-widest text-sm">VIDEO PAUSED</span>
+        {/* REMOTE OFF STATE (VOICE VISUALIZER) */}
+        <div className={`absolute inset-0 flex items-center justify-center bg-zinc-900 z-0 transition-opacity duration-700 ${!remoteStatus.isVideoEnabled ? 'opacity-100' : 'opacity-0'}`}>
+             <div className="flex flex-col items-center">
+                 <div className={`w-32 h-32 rounded-full border border-zinc-700 flex items-center justify-center mb-6 relative ${isRemoteSpeaking ? 'shadow-[0_0_100px_rgba(37,99,235,0.3)] bg-zinc-800' : 'bg-zinc-900'}`}>
+                     <div className={`absolute inset-0 rounded-full bg-blue-600/20 transition-all duration-100 ${isRemoteSpeaking ? 'scale-125 opacity-100' : 'scale-100 opacity-0'}`}></div>
+                     {isRemoteSpeaking ? <Zap size={40} className="text-blue-500 fill-blue-500" /> : <User size={40} className="text-zinc-600" />}
                  </div>
+                 <span className="text-zinc-500 font-mono tracking-widest text-sm uppercase">Voice Link Active</span>
              </div>
-        )}
-        
-        {/* CALL TIMER - CENTERED TOP */}
-        <div className="absolute top-6 left-1/2 -translate-x-1/2 z-20 px-6 py-2 rounded-full bg-black border border-white/20 backdrop-blur-md flex items-center gap-3 shadow-xl">
-            <div className="w-2 h-2 rounded-full bg-red-600 animate-pulse" />
-            <span className="text-lg font-mono font-bold tracking-widest text-white">
-                {formatDuration(callDuration)}
-            </span>
         </div>
-
+        
         {/* SECURITY BADGE OVERLAY */}
         <div className="absolute top-6 left-6 z-20 flex flex-col gap-2">
            <div 
@@ -615,7 +543,6 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
               </span>
            </div>
 
-           {/* KEY ROTATION INDICATOR */}
            {securityContext?.lastRotation && (
              <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-black/60 border border-white/10 backdrop-blur-md text-zinc-500 animate-in fade-in slide-in-from-left-2">
                 <RefreshCcw size={10} />
@@ -625,7 +552,6 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
              </div>
            )}
 
-           {/* FINGERPRINT MODAL */}
            {showFingerprint && securityContext && (
              <div className="mt-2 p-5 bg-black border border-zinc-800 rounded-none shadow-2xl max-w-xs animate-in fade-in slide-in-from-top-2">
                 <div className="flex items-center gap-2 mb-4 text-zinc-500">
@@ -644,10 +570,17 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
            )}
         </div>
 
-        {/* PIP */}
-        <div className="absolute top-4 right-4 w-28 md:w-48 aspect-[9/16] bg-black border border-zinc-800 rounded-2xl shadow-2xl z-30 overflow-hidden group">
-             <video ref={myVideoRef} autoPlay playsInline muted className={`w-full h-full object-cover mirror transition-opacity duration-300 ${isVideoOff ? 'opacity-0' : 'opacity-100'}`} />
-             <div className="absolute inset-0 bg-black flex items-center justify-center -z-10"><CameraOff size={20} className="text-zinc-800" /></div>
+        {/* PIP - LOCAL VIDEO with SWEET ANIMATION */}
+        <div className={`absolute top-4 right-4 w-28 md:w-48 aspect-[9/16] bg-black border border-zinc-800 rounded-2xl shadow-2xl z-30 overflow-hidden group transition-all duration-700 ease-[cubic-bezier(0.34,1.56,0.64,1)] origin-top-right ${isVideoOff ? 'scale-0 opacity-0' : 'scale-100 opacity-100'}`}>
+             <video ref={myVideoRef} autoPlay playsInline muted className="w-full h-full object-cover mirror" />
+        </div>
+
+        {/* CALL TIMER - REPOSITIONED BOTTOM */}
+        <div className="absolute bottom-32 left-1/2 -translate-x-1/2 z-20 px-4 py-1 rounded-full bg-black/40 border border-white/5 backdrop-blur-md flex items-center gap-3 opacity-40 hover:opacity-100 transition-opacity duration-300">
+            <div className="w-1.5 h-1.5 rounded-full bg-red-600 animate-pulse" />
+            <span className="text-sm font-mono tracking-widest text-white/90">
+                {formatDuration(callDuration)}
+            </span>
         </div>
 
         {/* CONTROLS - FLOATING ISLAND */}
@@ -699,7 +632,6 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
                 </div>
             </div>
             
-            {/* Identity Fingerprint Display - Styled to match screenshot */}
             {identity && (
               <div className="mb-10 flex items-center gap-4 select-text">
                  <Fingerprint size={36} strokeWidth={1} className="text-zinc-700 shrink-0"/>
@@ -749,8 +681,11 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
 
       {/* Local Preview Card */}
       <div className="bento-cell col-span-1 md:col-span-1 lg:col-span-2 row-span-2 md:row-span-3 relative group overflow-hidden bg-black min-h-[250px] rounded-3xl border border-zinc-800">
-         <video ref={myVideoRef} autoPlay playsInline muted className={`w-full h-full object-cover opacity-50 group-hover:opacity-80 transition-all duration-700 mirror rounded-3xl ${isVideoOff ? 'hidden' : 'block'}`} />
-         
+         {/* Animated Preview Container */}
+         <div className={`w-full h-full transition-opacity duration-500 ${isVideoOff ? 'opacity-0' : 'opacity-50 group-hover:opacity-80'}`}>
+            <video ref={myVideoRef} autoPlay playsInline muted className="w-full h-full object-cover mirror rounded-3xl" />
+         </div>
+
          {error && (
              <div className="absolute inset-0 bg-black/90 flex items-center justify-center p-8 z-20 rounded-3xl">
                  <div className="flex flex-col items-center text-center">
@@ -763,7 +698,7 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
          
          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
              {isVideoOff && !error ? (
-                 <div className="flex flex-col items-center gap-6 text-zinc-800">
+                 <div className="flex flex-col items-center gap-6 text-zinc-800 animate-in fade-in zoom-in duration-500">
                      <CameraOff size={64} strokeWidth={1} />
                      <span className="font-mono text-xs tracking-[0.3em] uppercase">Camera Disabled</span>
                  </div>
@@ -773,10 +708,10 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
          </div>
 
          <div className="absolute bottom-8 right-8 flex gap-3 z-20">
-            <button onClick={toggleVideo} className="p-4 bg-black border border-zinc-800 text-white hover:bg-white hover:text-black transition-colors rounded-full">
+            <button onClick={toggleVideo} className={`p-4 border text-white transition-all rounded-full ${isVideoOff ? 'bg-zinc-900 border-zinc-800 hover:bg-zinc-800' : 'bg-black border-zinc-800 hover:bg-white hover:text-black'}`}>
                 {isVideoOff ? <CameraOff size={20} /> : <Camera size={20} />}
             </button>
-            <button onClick={toggleAudio} className="p-4 bg-black border border-zinc-800 text-white hover:bg-white hover:text-black transition-colors rounded-full">
+            <button onClick={toggleAudio} className={`p-4 border text-white transition-all rounded-full ${isMuted ? 'bg-red-900/20 border-red-900 text-red-500' : 'bg-black border-zinc-800 hover:bg-white hover:text-black'}`}>
                 {isMuted ? <MicOff size={20} /> : <Mic size={20} />}
             </button>
          </div>

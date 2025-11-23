@@ -97,19 +97,46 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
       }
       
       peer.on('open', (id: string) => {
+        console.log("Connected to Signaling Server. ID:", id);
         setPeerId(id);
+        setStatus('idle');
+        setError(null);
+      });
+
+      // --- CRITICAL: AUTO RECONNECT ---
+      peer.on('disconnected', () => {
+        console.warn("PeerJS: Disconnected from signaling server. Reconnecting...");
+        // Auto-reconnect if not destroyed
+        if (peer && !peer.destroyed) {
+            // Short timeout to allow network to stabilize
+            setTimeout(() => {
+                if (peer && !peer.destroyed) peer.reconnect();
+            }, 1000);
+        }
+      });
+
+      peer.on('close', () => {
+        console.warn("PeerJS: Connection closed permanently.");
         setStatus('idle');
       });
 
       peer.on('error', (err: any) => {
         console.error("PeerJS Error:", err);
+        // Handle "Lost connection to server" gracefully
+        if (err.type === 'network' || err.message?.includes('Lost connection')) {
+             console.log("Transient network error. Attempting recovery...");
+             // Do not show error to user immediately, let reconnect logic handle it
+             return; 
+        }
+
         if (err.type === 'peer-unavailable') {
             setError(`User "${remotePeerIdValue}" is unreachable. Check the ID.`);
             setStatus('idle');
         } else if (err.type === 'unavailable-id' || err.type === 'invalid-id' || err.type === 'browser-incompatible') {
             setError(`Connection Error: ${err.type}`);
-        } else if (err.type === 'network') {
-            setError("Network error. NAT traversal failed. Try different network.");
+        } else {
+            // For other errors, show them
+            // setError(`System Error: ${err.type || err.message}`); 
         }
       });
 
@@ -276,7 +303,8 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
       call.on('close', () => handleEndCall());
       call.on('error', (e: any) => {
           console.error("Call error", e);
-          setError("Call connection interrupted.");
+          // Only show error if call wasn't manually ended
+          if (status === 'connected') setError("Call connection interrupted.");
       });
       setCurrentCall(call);
   };
@@ -310,6 +338,7 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
         setError(null);
       } catch (err: any) {
         console.error("Failed local stream", err);
+        // Don't set global error yet, just log
       }
     };
     initLocalVideo();

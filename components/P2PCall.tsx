@@ -2,8 +2,8 @@ import React, { useEffect, useRef, useState } from 'react';
 import Peer from 'peerjs';
 import { Button } from './Button';
 import { 
-  Camera, CameraOff, Mic, MicOff, Monitor, PhoneOff, 
-  Copy, ArrowRight, MonitorOff, Check, Eye, Loader2,
+  Camera, CameraOff, Mic, MicOff, PhoneOff, 
+  Copy, ArrowRight, Check, Eye, Loader2,
   AlertCircle, ShieldCheck, Lock, Fingerprint, RefreshCcw, User
 } from 'lucide-react';
 import { SecureProtocolService } from '../services/secureProtocolService';
@@ -645,21 +645,33 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
         </div>
 
         {/* PIP */}
-        <div className="absolute top-4 right-4 w-28 md:w-48 aspect-[9/16] bg-black border border-zinc-800 shadow-2xl z-30 overflow-hidden group">
+        <div className="absolute top-4 right-4 w-28 md:w-48 aspect-[9/16] bg-black border border-zinc-800 rounded-2xl shadow-2xl z-30 overflow-hidden group">
              <video ref={myVideoRef} autoPlay playsInline muted className={`w-full h-full object-cover mirror transition-opacity duration-300 ${isVideoOff ? 'opacity-0' : 'opacity-100'}`} />
              <div className="absolute inset-0 bg-black flex items-center justify-center -z-10"><CameraOff size={20} className="text-zinc-800" /></div>
         </div>
 
-        {/* CONTROLS */}
-        <div className="absolute bottom-10 left-1/2 -translate-x-1/2 flex items-center gap-4 md:gap-8 p-4 md:p-6 bg-black border border-zinc-800 rounded-none z-40 shadow-2xl safe-pb">
-            <button onClick={toggleAudio} className={`p-4 rounded-full transition-all active:scale-95 ${isMuted ? 'bg-red-600 text-white' : 'bg-white text-black hover:bg-zinc-200'}`}>
+        {/* CONTROLS - FLOATING ISLAND */}
+        <div className="absolute bottom-10 left-1/2 -translate-x-1/2 flex items-center gap-6 p-4 md:p-6 bg-zinc-900/90 backdrop-blur-xl border border-white/10 rounded-full z-40 shadow-2xl mb-8 safe-pb">
+            <button 
+                onClick={toggleAudio} 
+                className={`p-4 rounded-full transition-all active:scale-95 shadow-md ${isMuted ? 'bg-red-600 text-white hover:bg-red-700' : 'bg-white text-black hover:bg-zinc-200'}`}
+                title={isMuted ? "Unmute" : "Mute"}
+            >
                 {isMuted ? <MicOff size={24} /> : <Mic size={24} />}
             </button>
-            <button onClick={toggleVideo} className={`p-4 rounded-full transition-all active:scale-95 ${isVideoOff ? 'bg-red-600 text-white' : 'bg-white text-black hover:bg-zinc-200'}`}>
+            <button 
+                onClick={toggleVideo} 
+                className={`p-4 rounded-full transition-all active:scale-95 shadow-md ${isVideoOff ? 'bg-red-600 text-white hover:bg-red-700' : 'bg-white text-black hover:bg-zinc-200'}`}
+                title={isVideoOff ? "Turn Camera On" : "Turn Camera Off"}
+            >
                 {isVideoOff ? <CameraOff size={24} /> : <Camera size={24} />}
             </button>
-            <div className="w-px h-10 bg-zinc-800 mx-2"></div>
-            <button onClick={handleEndCall} className="p-4 rounded-full bg-red-600 text-white hover:bg-red-500 transition-all active:scale-95 shadow-lg">
+            <div className="w-px h-8 bg-white/20 mx-2"></div>
+            <button 
+                onClick={handleEndCall} 
+                className="p-4 rounded-full bg-red-600 text-white hover:bg-red-500 transition-all active:scale-95 shadow-lg"
+                title="End Call"
+            >
                 <PhoneOff size={24} />
             </button>
         </div>
@@ -669,19 +681,19 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
 
   // DASHBOARD - BENTO GRID LAYOUT
   return (
-    <div className="w-full h-full bento-grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 md:grid-rows-6 p-0 gap-[1px] auto-rows-fr">
+    <div className="w-full h-full bento-grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 md:grid-rows-6 p-4 gap-4 auto-rows-fr">
       
       {/* Identity Card */}
-      <div className="bento-cell col-span-1 row-span-2 md:row-span-6 p-8 md:p-12 flex flex-col justify-center relative overflow-hidden min-h-[300px]">
+      <div className="bento-cell col-span-1 row-span-2 md:row-span-6 p-8 md:p-12 flex flex-col justify-center relative overflow-hidden min-h-[300px] rounded-3xl border border-zinc-800">
         <div className="absolute -top-10 -right-10 p-0 opacity-[0.03]"><User size={400} /></div>
         <div className="relative z-10 flex flex-col h-full justify-center">
             <h2 className="text-xs text-blue-600 font-bold font-mono mb-8 uppercase tracking-[0.2em] flex items-center gap-2">
-                <div className="w-2 h-2 bg-blue-600 rounded-none"></div>
+                <div className="w-2 h-2 bg-blue-600 rounded-full"></div>
                 My Signal
             </h2>
             
             <div className="mb-8">
-                <div className="text-4xl md:text-6xl font-black text-white mb-2 break-all tracking-tighter leading-[0.9]">
+                <div className="text-2xl md:text-4xl font-black text-white mb-2 break-all tracking-tighter leading-tight">
                     {peerId ? peerId.substring(0, 6) : '......'}
                     <span className="text-zinc-800">{peerId ? peerId.substring(6) : ''}</span>
                 </div>
@@ -689,7 +701,7 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
             
             {/* Identity Fingerprint Display */}
             {identity && (
-              <div className="mb-10 p-4 bg-zinc-950 border border-zinc-900 flex items-center gap-4">
+              <div className="mb-10 p-4 bg-zinc-950 border border-zinc-900 rounded-xl flex items-center gap-4">
                  <Fingerprint size={20} className="text-zinc-700"/>
                  <div className="flex flex-col">
                    <span className="text-[9px] text-zinc-600 font-mono uppercase tracking-widest mb-1">Public Key Hash</span>
@@ -699,7 +711,7 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
             )}
             
             <div className="mt-auto">
-                <Button variant="secondary" onClick={copyId} className="w-full justify-between group h-16 border-zinc-800 hover:border-white hover:bg-white hover:text-black transition-all">
+                <Button variant="secondary" onClick={copyId} className="w-full justify-between group h-16 border-zinc-800 hover:border-white hover:bg-white hover:text-black transition-all rounded-full">
                     <span className="text-sm font-mono tracking-widest uppercase pl-2">{copied ? 'COPIED TO CLIPBOARD' : 'COPY ID'}</span>
                     {copied ? <Check size={20} className="text-green-600" /> : <Copy size={20} className="text-zinc-500 group-hover:text-black"/>}
                 </Button>
@@ -708,14 +720,14 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
       </div>
 
       {/* Connect Card */}
-      <div className="bento-cell col-span-1 md:col-span-1 lg:col-span-2 row-span-2 md:row-span-3 p-8 md:p-12 flex flex-col justify-center bg-zinc-950 min-h-[300px]">
+      <div className="bento-cell col-span-1 md:col-span-1 lg:col-span-2 row-span-2 md:row-span-3 p-8 md:p-12 flex flex-col justify-center bg-zinc-950 min-h-[300px] rounded-3xl border border-zinc-800">
          <h2 className="text-xs text-zinc-600 font-bold font-mono mb-8 uppercase tracking-[0.2em]">Dial</h2>
          <div className="flex flex-col gap-0 max-w-2xl w-full">
              <div className="relative group">
                  <input 
                     type="text" 
                     placeholder="ENTER ID"
-                    className="w-full bg-transparent border-b-2 border-zinc-800 py-6 text-white font-black placeholder:text-zinc-900 focus:border-blue-600 focus:outline-none transition-colors text-4xl md:text-6xl tracking-tighter uppercase"
+                    className="w-full bg-transparent border-b-2 border-zinc-800 py-6 text-white font-black placeholder:text-zinc-900 focus:border-blue-600 focus:outline-none transition-colors text-4xl md:text-6xl tracking-tighter uppercase rounded-none"
                     value={remotePeerIdValue}
                     onChange={e => setRemotePeerIdValue(e.target.value)}
                  />
@@ -724,7 +736,7 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
                 <Button 
                     variant="primary" 
                     size="lg" 
-                    className="py-6 px-8 bg-blue-600 border-blue-600 hover:bg-blue-500 hover:border-blue-500 text-white w-auto flex gap-4 items-center group disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="py-6 px-8 bg-blue-600 border-blue-600 hover:bg-blue-500 hover:border-blue-500 text-white w-auto flex gap-4 items-center group disabled:opacity-50 disabled:cursor-not-allowed rounded-full"
                     onClick={() => initiateCall(remotePeerIdValue)} 
                     disabled={!remotePeerIdValue || !peerId}
                 >
@@ -736,15 +748,15 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
       </div>
 
       {/* Local Preview Card */}
-      <div className="bento-cell col-span-1 md:col-span-1 lg:col-span-2 row-span-2 md:row-span-3 relative group overflow-hidden bg-black min-h-[250px] border-t border-zinc-900 md:border-t-0">
-         <video ref={myVideoRef} autoPlay playsInline muted className={`w-full h-full object-cover opacity-50 group-hover:opacity-80 transition-all duration-700 mirror ${isVideoOff ? 'hidden' : 'block'}`} />
+      <div className="bento-cell col-span-1 md:col-span-1 lg:col-span-2 row-span-2 md:row-span-3 relative group overflow-hidden bg-black min-h-[250px] rounded-3xl border border-zinc-800">
+         <video ref={myVideoRef} autoPlay playsInline muted className={`w-full h-full object-cover opacity-50 group-hover:opacity-80 transition-all duration-700 mirror rounded-3xl ${isVideoOff ? 'hidden' : 'block'}`} />
          
          {error && (
-             <div className="absolute inset-0 bg-black/90 flex items-center justify-center p-8 z-20">
+             <div className="absolute inset-0 bg-black/90 flex items-center justify-center p-8 z-20 rounded-3xl">
                  <div className="flex flex-col items-center text-center">
                     <AlertCircle size={40} className="text-red-600 mb-4" />
                     <span className="text-red-500 font-mono text-xs uppercase tracking-widest max-w-md leading-relaxed">{error}</span>
-                    {error.includes("use") && <Button variant="ghost" onClick={() => window.location.reload()} className="mt-6 border border-zinc-800 text-zinc-400">System Reload</Button>}
+                    {error.includes("use") && <Button variant="ghost" onClick={() => window.location.reload()} className="mt-6 border border-zinc-800 text-zinc-400 rounded-full">System Reload</Button>}
                  </div>
              </div>
          )}
@@ -761,10 +773,10 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
          </div>
 
          <div className="absolute bottom-8 right-8 flex gap-3 z-20">
-            <button onClick={toggleVideo} className="p-4 bg-black border border-zinc-800 text-white hover:bg-white hover:text-black transition-colors">
+            <button onClick={toggleVideo} className="p-4 bg-black border border-zinc-800 text-white hover:bg-white hover:text-black transition-colors rounded-full">
                 {isVideoOff ? <CameraOff size={20} /> : <Camera size={20} />}
             </button>
-            <button onClick={toggleAudio} className="p-4 bg-black border border-zinc-800 text-white hover:bg-white hover:text-black transition-colors">
+            <button onClick={toggleAudio} className="p-4 bg-black border border-zinc-800 text-white hover:bg-white hover:text-black transition-colors rounded-full">
                 {isMuted ? <MicOff size={20} /> : <Mic size={20} />}
             </button>
          </div>

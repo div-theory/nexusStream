@@ -1,0 +1,8 @@
+{
+  "name": "Nexus Stream",
+  "description": "Secure, peer-to-peer video and voice calling application with screen sharing capabilities and an integrated Gemini Live AI assistant.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}

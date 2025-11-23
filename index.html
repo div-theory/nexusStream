@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Nexus Stream</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@100;200;300;400&family=JetBrains+Mono:wght@100;300;400&display=swap" rel="stylesheet">
+    <style>
+      :root {
+        --bg-primary: #000000;
+        --bg-secondary: #0a0a0a;
+        --accent: #2563EB; /* Sharp Blue */
+        --text-primary: #FFFFFF;
+        --text-secondary: #888888;
+        --border-color: #222222;
+      }
+
+      body {
+        background-color: var(--bg-primary);
+        color: var(--text-primary);
+        margin: 0;
+        font-family: 'Inter', sans-serif; /* Simulating Satoshi Thin with Inter Light/Thin */
+        font-weight: 200; 
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+        overflow: hidden;
+      }
+
+      /* Custom Scrollbar - Sharp and minimal */
+      ::-webkit-scrollbar {
+        width: 4px;
+        height: 4px;
+      }
+      ::-webkit-scrollbar-track {
+        background: var(--bg-primary);
+      }
+      ::-webkit-scrollbar-thumb {
+        background: var(--border-color); 
+      }
+      ::-webkit-scrollbar-thumb:hover {
+        background: var(--accent); 
+      }
+
+      .font-mono {
+        font-family: 'JetBrains Mono', monospace;
+      }
+      
+      /* Utilities for the design system */
+      .sharp {
+        border-radius: 0 !important;
+      }
+      
+      .bento-grid {
+        display: grid;
+        gap: 1px;
+        background-color: var(--border-color);
+        border: 1px solid var(--border-color);
+      }
+      
+      .bento-cell {
+        background-color: var(--bg-primary);
+      }
+    </style>
+  <script type="importmap">
+{
+  "imports": {
+    "react/": "https://aistudiocdn.com/react@^19.2.0/",
+    "react": "https://aistudiocdn.com/react@^19.2.0",
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
+    "lucide-react": "https://aistudiocdn.com/lucide-react@^0.554.0",
+    "@google/genai": "https://aistudiocdn.com/@google/genai@^1.30.0",
+    "peerjs": "https://aistudiocdn.com/peerjs@^1.5.5"
+  }
+}
+</script>
+</head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>

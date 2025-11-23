@@ -9,7 +9,7 @@ const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<Tab>('p2p');
 
   return (
-    <div className="h-[100dvh] w-screen bg-black text-white overflow-hidden flex flex-col md:flex-row supports-[height:100dvh]:h-[100dvh]">
+    <div className="fixed inset-0 bg-black text-white flex flex-col md:flex-row overflow-hidden">
       
       {/* Navigation Rail - Vertical Grid Section */}
       <nav className="w-full md:w-16 flex md:flex-col border-b md:border-b-0 md:border-r border-white/10 bg-black z-20 shrink-0 order-2 md:order-1 pb-[env(safe-area-inset-bottom)] md:pb-0">
@@ -45,7 +45,7 @@ const App: React.FC = () => {
       </nav>
 
       {/* Main Content - Bento Grid Layout */}
-      <main role="main" className="flex-1 relative h-full bg-black overflow-hidden flex flex-col order-1 md:order-2">
+      <main role="main" className="flex-1 relative bg-black flex flex-col order-1 md:order-2 overflow-hidden h-full">
         {/* Header Strip */}
         <header className="h-14 md:h-16 border-b border-white/10 flex items-center justify-between px-4 md:px-8 bg-black/50 backdrop-blur-sm z-10 shrink-0 pt-[env(safe-area-inset-top)] md:pt-0">
           <div className="flex items-baseline gap-4">
@@ -68,11 +68,11 @@ const App: React.FC = () => {
         </header>
 
         {/* Content Area */}
-        <div className="flex-1 min-h-0 relative p-0 md:p-1 overflow-hidden">
+        <div className="flex-1 relative w-full h-full p-0 md:p-1 overflow-hidden">
              {activeTab === 'p2p' ? (
                  <P2PCall onEndCall={() => {}} />
              ) : (
-                 <div className="h-full w-full max-w-5xl mx-auto md:py-8 md:px-8">
+                 <div className="h-full w-full max-w-5xl mx-auto md:py-8 md:px-8 overflow-y-auto">
                      <GeminiLiveAssistant />
                  </div>
              )}

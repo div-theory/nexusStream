@@ -2,7 +2,8 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes, viewport-fit=cover" />
+    <meta name="theme-color" content="#000000" />
     <title>Nexus Stream</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -18,18 +19,28 @@
         --border-color: #222222;
       }
 
+      * {
+        box-sizing: border-box;
+      }
+
+      html, body {
+        height: 100%;
+        width: 100%;
+        margin: 0;
+        padding: 0;
+      }
+
       body {
         background-color: var(--bg-primary);
         color: var(--text-primary);
-        margin: 0;
         font-family: 'Inter', sans-serif;
         font-weight: 200; 
         -webkit-font-smoothing: antialiased;
         -moz-osx-font-smoothing: grayscale;
         overflow: hidden; /* Prevent scroll on body */
-        touch-action: manipulation; /* Allow zoom/pan but remove tap delay */
-        height: 100dvh;
-        width: 100vw;
+        touch-action: manipulation;
+        position: fixed; /* Lock body for mobile app feel */
+        inset: 0;
       }
 
       /* Custom Scrollbar - Sharp and minimal */
@@ -78,6 +89,7 @@
     "react/": "https://aistudiocdn.com/react@^19.2.0/",
     "react": "https://aistudiocdn.com/react@^19.2.0",
     "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
+    "react-dom": "https://aistudiocdn.com/react-dom@^19.2.0",
     "lucide-react": "https://aistudiocdn.com/lucide-react@^0.554.0",
     "@google/genai": "https://aistudiocdn.com/@google/genai@^1.30.0",
     "peerjs": "https://aistudiocdn.com/peerjs@^1.5.5"
@@ -86,6 +98,6 @@
 </script>
 </head>
   <body>
-    <div id="root"></div>
+    <div id="root" style="height: 100%; width: 100%;"></div>
   </body>
 </html>

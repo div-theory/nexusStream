@@ -3,7 +3,8 @@ import Peer from 'peerjs';
 import { Button } from './Button';
 import { 
   Camera, CameraOff, Mic, MicOff, Monitor, PhoneOff, 
-  Copy, Signal, MonitorOff, UserPlus, Zap, Check, Eye
+  Copy, Signal, MonitorOff, UserPlus, Zap, Check, Eye, Loader2,
+  AlertCircle
 } from 'lucide-react';
 
 // Types for PeerJS components to avoid strict build errors
@@ -35,6 +36,7 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoOff, setIsVideoOff] = useState(false);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   
   // Remote State (via DataConnection)
   const [remoteStatus, setRemoteStatus] = useState<PeerStatus>({ isVideoEnabled: true, isAudioEnabled: true });
@@ -50,14 +52,20 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animationRef = useRef<number>(0);
+  
+  // Critical: Ref to hold stream for access inside closures (PeerJS callbacks)
+  const localStreamRef = useRef<MediaStream | null>(null);
 
   // --- 1. Initialize Peer & Local Stream ---
   useEffect(() => {
     let peer: Peer;
     try {
-      peer = new Peer();
+      // Safe instantiation for ESM/CDN interop
+      const PeerClass = (Peer as any).default || Peer;
+      peer = new PeerClass();
     } catch (e) {
       console.error("PeerJS init failed", e);
+      setError("Failed to initialize secure connection module.");
       return;
     }
     
@@ -66,25 +74,38 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
       setStatus('idle');
     });
 
+    peer.on('error', (err) => {
+      console.error("PeerJS Error:", err);
+      // Don't show critical error for transient network issues, but do for fatal ones
+      if (err.type === 'unavailable-id' || err.type === 'invalid-id' || err.type === 'browser-incompatible') {
+          setError(`Connection Error: ${err.type}`);
+      }
+    });
+
     // Handle incoming media calls
     peer.on('call', (call: MediaConnection) => {
-      navigator.mediaDevices.getUserMedia({ video: true, audio: true })
-        .then((mediaStream) => {
-          setStream(mediaStream);
-          if (myVideoRef.current) myVideoRef.current.srcObject = mediaStream;
-          
-          call.answer(mediaStream);
-          setStatus('connected');
-          
-          call.on('stream', (remoteStream: MediaStream) => {
-            setRemoteStream(remoteStream);
-            if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remoteStream;
-            setupAudioAnalysis(remoteStream);
-          });
+      // Reuse the existing local stream if available
+      const currentStream = localStreamRef.current;
 
-          call.on('close', () => handleEndCall());
-          setCurrentCall(call);
-        });
+      if (currentStream) {
+        call.answer(currentStream);
+        handleCallSetup(call);
+      } else {
+        // Fallback: If no stream exists yet, try to get it (rare race condition)
+        navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: true })
+          .then((mediaStream) => {
+            setStream(mediaStream);
+            localStreamRef.current = mediaStream;
+            if (myVideoRef.current) myVideoRef.current.srcObject = mediaStream;
+            
+            call.answer(mediaStream);
+            handleCallSetup(call);
+          })
+          .catch(err => {
+             console.error("Failed to get stream to answer call", err);
+             setError("Could not access camera to answer call.");
+          });
+      }
     });
 
     // Handle incoming data connections (for status sync)
@@ -110,21 +131,58 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
     };
   }, []);
 
+  // Helper to setup call event listeners
+  const handleCallSetup = (call: MediaConnection) => {
+      setStatus('connected');
+      
+      call.on('stream', (remoteStream: MediaStream) => {
+        setRemoteStream(remoteStream);
+        if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remoteStream;
+        setupAudioAnalysis(remoteStream);
+      });
+
+      call.on('close', () => handleEndCall());
+      call.on('error', (e: any) => console.error("Call error", e));
+      setCurrentCall(call);
+  };
+
   // Initialize Local Video Preview
   useEffect(() => {
     const initLocalVideo = async () => {
       try {
-        const mediaStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        // Mobile constraint: prefer front camera
+        const mediaStream = await navigator.mediaDevices.getUserMedia({ 
+            video: { facingMode: 'user' }, 
+            audio: true 
+        });
+        
         setStream(mediaStream);
-        if (myVideoRef.current) myVideoRef.current.srcObject = mediaStream;
-      } catch (err) {
+        localStreamRef.current = mediaStream;
+        
+        if (myVideoRef.current) {
+            myVideoRef.current.srcObject = mediaStream;
+        }
+        setError(null);
+      } catch (err: any) {
         console.error("Failed local stream", err);
+        if (err.name === 'NotAllowedError') {
+            setError("Permission denied. Please allow camera and microphone access.");
+        } else if (err.name === 'NotFoundError') {
+            setError("No camera or microphone found.");
+        } else if (err.name === 'NotReadableError') {
+            setError("Camera is currently in use by another application.");
+        } else {
+            setError("Could not start video source.");
+        }
       }
     };
     initLocalVideo();
     
     return () => {
-      stream?.getTracks().forEach(track => track.stop());
+      // Use ref to ensure we clean up the actual stream created in this effect
+      if (localStreamRef.current) {
+          localStreamRef.current.getTracks().forEach(track => track.stop());
+      }
     };
   }, []);
 
@@ -138,11 +196,18 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
   // --- 2. Logic: Calls & Connections ---
 
   const initiateCall = (remoteId: string) => {
-    if (!peerRef.current || !stream) return;
+    // Check ref instead of state to be safe, though state should match
+    const currentStream = localStreamRef.current;
+    
+    if (!peerRef.current || !currentStream) {
+        setError("Cannot connect: Camera stream not active.");
+        return;
+    }
+    
     setStatus('calling');
     
     // Media Call
-    const call = peerRef.current.call(remoteId, stream);
+    const call = peerRef.current.call(remoteId, currentStream);
     
     call.on('stream', (remoteStream: MediaStream) => {
       setRemoteStream(remoteStream);
@@ -153,6 +218,12 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
 
     call.on('close', () => {
       handleEndCall();
+    });
+    
+    call.on('error', (err: any) => {
+        console.error("Call connection error", err);
+        setError("Call connection failed.");
+        setStatus('idle');
     });
 
     setCurrentCall(call);
@@ -186,11 +257,12 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
         const dataArray = new Uint8Array(bufferLength);
 
         const checkAudio = () => {
-            analyser.getByteFrequencyData(dataArray);
+            if (!analyserRef.current) return;
+            analyserRef.current.getByteFrequencyData(dataArray);
             const sum = dataArray.reduce((a, b) => a + b, 0);
             const average = sum / bufferLength;
             // Threshold for "speaking"
-            setIsRemoteSpeaking(average > 10);
+            setIsRemoteSpeaking(average > 15); // Slightly increased threshold
             animationRef.current = requestAnimationFrame(checkAudio);
         };
         checkAudio();
@@ -255,10 +327,13 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
   };
 
   const replaceStream = (newStream: MediaStream) => {
+    // Stop old video tracks only
     if (stream) {
         stream.getVideoTracks().forEach(t => t.stop());
     }
     setStream(newStream);
+    localStreamRef.current = newStream; // Update ref
+    
     if (myVideoRef.current) myVideoRef.current.srcObject = newStream;
     
     if (currentCall && currentCall.peerConnection) {
@@ -278,7 +353,10 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
     setStatus('idle');
     setRemoteStatus({ isVideoEnabled: true, isAudioEnabled: true });
     if (animationRef.current) cancelAnimationFrame(animationRef.current);
-    if (audioContextRef.current) audioContextRef.current.close();
+    if (audioContextRef.current) {
+        audioContextRef.current.close();
+        audioContextRef.current = null;
+    }
     onEndCall();
   };
 
@@ -293,6 +371,16 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
   const isConnected = status === 'connected' || status === 'calling';
 
   // --- RENDER ---
+
+  if (status === 'initializing') {
+      return (
+          <div className="w-full h-full flex items-center justify-center bg-zinc-950 flex-col gap-4">
+              <Loader2 className="animate-spin text-blue-600" size={32} />
+              <div className="text-zinc-500 font-mono text-xs uppercase tracking-widest">Initializing Secure Node...</div>
+              {error && <div className="text-red-500 font-mono text-xs max-w-xs text-center">{error}</div>}
+          </div>
+      );
+  }
 
   if (isConnected) {
     // IMMERSIVE MOBILE-FIRST CALL UI
@@ -382,10 +470,10 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
 
   // DASHBOARD LAYOUT (IDLE)
   return (
-    <div className="w-full h-full bento-grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 grid-rows-6 p-0 md:p-0 gap-[1px]">
+    <div className="w-full h-full bento-grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 md:grid-rows-6 p-0 gap-[1px] auto-rows-fr">
       
       {/* Identity Card */}
-      <div className="bento-cell col-span-1 row-span-2 md:row-span-6 p-6 md:p-8 flex flex-col justify-center relative overflow-hidden">
+      <div className="bento-cell col-span-1 row-span-2 md:row-span-6 p-6 md:p-8 flex flex-col justify-center relative overflow-hidden min-h-[300px]">
         <div className="absolute top-0 right-0 p-4 opacity-5">
             <UserPlus size={150} />
         </div>
@@ -411,7 +499,7 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
       </div>
 
       {/* Connect Card */}
-      <div className="bento-cell col-span-1 md:col-span-1 lg:col-span-2 row-span-2 md:row-span-3 p-6 md:p-8 flex flex-col justify-center bg-zinc-950">
+      <div className="bento-cell col-span-1 md:col-span-1 lg:col-span-2 row-span-2 md:row-span-3 p-6 md:p-8 flex flex-col justify-center bg-zinc-950 min-h-[250px]">
          <h2 className="text-xs text-zinc-500 font-bold font-mono mb-6 uppercase tracking-widest">Establish Link</h2>
          <div className="flex flex-col gap-4 max-w-lg w-full">
              <div className="relative group">
@@ -439,7 +527,7 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
       </div>
 
       {/* Local Preview Card (Idle) */}
-      <div className="bento-cell col-span-1 md:col-span-1 lg:col-span-2 row-span-2 md:row-span-3 relative group overflow-hidden bg-black">
+      <div className="bento-cell col-span-1 md:col-span-1 lg:col-span-2 row-span-2 md:row-span-3 relative group overflow-hidden bg-black min-h-[250px]">
          <video 
             ref={myVideoRef} 
             autoPlay 
@@ -448,17 +536,27 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
             className={`w-full h-full object-cover opacity-60 group-hover:opacity-100 transition-all duration-700 mirror ${isVideoOff ? 'hidden' : 'block'}`} 
          />
          
+         {/* Error Overlay */}
+         {error && (
+             <div className="absolute inset-0 bg-black/80 flex items-center justify-center p-6 z-20">
+                 <div className="flex flex-col items-center text-center">
+                    <AlertCircle size={32} className="text-red-500 mb-2" />
+                    <span className="text-red-500 font-mono text-xs">{error}</span>
+                 </div>
+             </div>
+         )}
+         
          {/* Overlay Grid */}
          <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.03)_1px,transparent_1px)] bg-[size:40px_40px] pointer-events-none"></div>
 
          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-             {isVideoOff ? (
+             {isVideoOff && !error ? (
                  <div className="flex flex-col items-center gap-4 text-zinc-800">
                      <CameraOff size={48} strokeWidth={1} />
                      <span className="font-mono text-xs tracking-widest">SIGNAL LOST</span>
                  </div>
              ) : (
-                 <div className="text-white/10 font-thin text-6xl tracking-tighter uppercase select-none">Preview</div>
+                 !error && <div className="text-white/10 font-thin text-6xl tracking-tighter uppercase select-none">Preview</div>
              )}
          </div>
 

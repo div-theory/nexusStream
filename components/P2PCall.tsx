@@ -47,6 +47,9 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
   const [status, setStatus] = useState<'initializing' | 'idle' | 'calling' | 'connected'>('initializing');
   const [copied, setCopied] = useState(false);
 
+  // --- TIMER STATE ---
+  const [callDuration, setCallDuration] = useState(0);
+
   // --- SECURITY STATE ---
   const [identity, setIdentity] = useState<CryptoIdentity | null>(null);
   const [securityContext, setSecurityContext] = useState<SecurityContext | null>(null);
@@ -63,6 +66,7 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
   const localStreamRef = useRef<MediaStream | null>(null);
   const ephemeralKeysRef = useRef<EphemeralKeys | null>(null); // Per-session keys
   const rotationIntervalRef = useRef<any>(null);
+  const isRequestingStream = useRef(false);
 
   // --- 1. Initialize Peer, Crypto Identity & Local Stream ---
   useEffect(() => {
@@ -147,20 +151,21 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
             return;
         }
 
+        const answerCall = (streamToUse: MediaStream) => {
+             call.answer(streamToUse);
+             handleCallSetup(call);
+        };
+
         const currentStream = localStreamRef.current;
         if (currentStream) {
-          call.answer(currentStream);
-          handleCallSetup(call);
+          answerCall(currentStream);
         } else {
-          navigator.mediaDevices.getUserMedia({ 
-            video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } }, 
-            audio: true 
-          })
+          // Fallback if no local stream yet
+          getMobileFriendlyStream()
             .then((mediaStream) => {
               setStream(mediaStream);
               localStreamRef.current = mediaStream;
-              call.answer(mediaStream);
-              handleCallSetup(call);
+              answerCall(mediaStream);
             })
             .catch(err => {
                console.error("Failed to get stream to answer call", err);
@@ -186,6 +191,32 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
       if (rotationIntervalRef.current) clearInterval(rotationIntervalRef.current);
     };
   }, []);
+
+  // --- TIMER LOGIC ---
+  useEffect(() => {
+    let interval: any;
+    if (status === 'connected') {
+      const startTime = Date.now();
+      setCallDuration(0);
+      interval = setInterval(() => {
+        setCallDuration(Math.floor((Date.now() - startTime) / 1000));
+      }, 1000);
+    } else {
+      setCallDuration(0);
+    }
+    return () => clearInterval(interval);
+  }, [status]);
+
+  const formatDuration = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    const hrs = Math.floor(mins / 60);
+    
+    if (hrs > 0) {
+      return `${hrs}:${(mins % 60).toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    }
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  };
 
   const setupSecureDataConnection = async (conn: DataConnection, currentIdentity: CryptoIdentity) => {
       // 1. Generate Initial Ephemeral Keys
@@ -325,20 +356,40 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
   }, [remoteStream, status]);
 
 
+  // Robust Helper for Mobile Streams
+  const getMobileFriendlyStream = async (): Promise<MediaStream> => {
+     try {
+       // Try specific mobile constraints first
+       return await navigator.mediaDevices.getUserMedia({ 
+           video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } }, 
+           audio: true 
+       });
+     } catch (err) {
+       console.warn("Specific constraints failed, trying generic...", err);
+       // Fallback to any camera
+       return await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+     }
+  };
+
   // Initialize Local Video Preview
   useEffect(() => {
     const initLocalVideo = async () => {
+      if (isRequestingStream.current) return;
+      isRequestingStream.current = true;
+      
       try {
-        const mediaStream = await navigator.mediaDevices.getUserMedia({ 
-            video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } }, 
-            audio: true 
-        });
+        // Add small delay to allow previous streams to fully clear
+        await new Promise(r => setTimeout(r, 100));
+        
+        const mediaStream = await getMobileFriendlyStream();
         setStream(mediaStream);
         localStreamRef.current = mediaStream;
         setError(null);
       } catch (err: any) {
         console.error("Failed local stream", err);
         // Don't set global error yet, just log
+      } finally {
+        isRequestingStream.current = false;
       }
     };
     initLocalVideo();
@@ -520,6 +571,14 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
                  </div>
              </div>
         )}
+        
+        {/* CALL TIMER - CENTERED TOP */}
+        <div className="absolute top-6 left-1/2 -translate-x-1/2 z-20 px-4 py-1.5 rounded-full bg-black/40 border border-white/5 backdrop-blur-md flex items-center gap-2">
+            <div className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
+            <span className="text-sm font-mono tracking-widest text-white/90">
+                {formatDuration(callDuration)}
+            </span>
+        </div>
 
         {/* SECURITY BADGE OVERLAY */}
         <div className="absolute top-6 left-6 z-20 flex flex-col gap-2">

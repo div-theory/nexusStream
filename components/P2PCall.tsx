@@ -7,6 +7,7 @@ import {
   AlertCircle, Shield, ShieldCheck, Lock, Fingerprint, RefreshCcw
 } from 'lucide-react';
 import { SecureProtocolService } from '../services/secureProtocolService';
+import { TurnService } from '../services/turnService'; // NEW IMPORT
 import { CryptoIdentity, EphemeralKeys, SecurityContext, HandshakePayload } from '../types';
 
 // Types for PeerJS components to avoid strict build errors
@@ -84,7 +85,12 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
       const id = await SecureProtocolService.getOrCreateIdentity();
       setIdentity(id);
 
-      // 2. Initialize PeerJS
+      // 2. Fetch ICE Servers (TURN/STUN)
+      // Generates a random temp ID for fetching creds if needed before we have a real Peer ID
+      const tempId = Math.random().toString(36).substring(7);
+      const iceServers = await TurnService.getIceServers(tempId);
+
+      // 3. Initialize PeerJS
       let peer: Peer;
       try {
         const PeerClass = (Peer as any).default || Peer;
@@ -93,10 +99,7 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
           secure: true, // Force secure connection for Vercel/HTTPS
           pingInterval: 5000, // Keep socket alive on mobile
           config: {
-            iceServers: [
-              { urls: 'stun:stun.l.google.com:19302' },
-              { urls: 'stun:global.stun.twilio.com:3478' } // Using only 2 reliable servers to speed up discovery
-            ],
+            iceServers: iceServers, // DYNAMICALLY LOADED SERVERS
             iceCandidatePoolSize: 10,
           }
         });

@@ -1,0 +1,184 @@
+{
+  "title": "TURN / WebRTC Connectivity Fix — Engineer Instructions",
+  "purpose": "Ensure cross-network WebRTC connectivity (mobile ↔ desktop, different networks) by deploying and configuring coturn with secure ephemeral credentials, TLS, and proper networking. Provide full debug steps and examples for client/server integration.",
+  "owner": "Engineering",
+  "priority": "high",
+  "prerequisites": {
+    "public_static_ip": "Required for TURN server (or NAT with port mapping). Provide PUBLIC_IP placeholder.",
+    "domain": "A DNS name that resolves to the public IP (e.g., turn.example.com). Provide TURN_FQDN placeholder.",
+    "tls_cert": "Valid TLS certificate for TURN_FQDN (Let’s Encrypt or corporate CA).",
+    "open_ports_required_on_firewall": [
+      "3478 TCP/UDP (STUN/TURN)",
+      "5349 TCP (TURN over TLS — turns)",
+      "49152-65535 UDP (TURN relay ports) — configurable range"
+    ],
+    "server_os": "Ubuntu 22.04+ or equivalent recommended",
+    "coturn_version": "Latest stable (ensure it supports TLS and REST auth)"
+  },
+  "deployment_instructions": {
+    "install_coturn_ubuntu_example": [
+      "sudo apt update",
+      "sudo apt install coturn -y",
+      "# enable systemd start at boot: edit /etc/default/coturn -> TURNSERVER_ENABLED=1"
+    ],
+    "coturn_minimal_config": {
+      "file_path": "/etc/turnserver.conf",
+      "replace_values": {
+        "EXTERNAL_IP": "YOUR_PUBLIC_IP",
+        "REALM": "turn.YOUR_DOMAIN",
+        "STATIC_AUTH_SECRET": "REPLACE_WITH_STRONG_RANDOM_SECRET"
+      },
+      "contents": "listening-port=3478\ntls-listening-port=5349\nlistening-ip=0.0.0.0\nrelay-ip=EXTERNAL_IP\nexternal-ip=EXTERNAL_IP\nfingerprint\nuse-auth-secret\nstatic-auth-secret=STATIC_AUTH_SECRET\nrealm=REALM\nno-multicast-peers\ntotal-quota=1000\nbps-capacity=0\nstale-nonce=600\nno-stdout-log\nlog-file=/var/log/turn/turn.log\n# Recommended: limit relay ports\nmin-port=49152\nmax-port=65535\n"
+    },
+    "tls_setup": {
+      "notes": "Obtain certificate for TURN_FQDN and install. Coturn expects PEM files.",
+      "cert_paths_example": {
+        "cert": "/etc/letsencrypt/live/turn.YOUR_DOMAIN/fullchain.pem",
+        "pkey": "/etc/letsencrypt/live/turn.YOUR_DOMAIN/privkey.pem"
+      },
+      "coturn_tls_config_snippets": "tls-cert=/etc/letsencrypt/live/turn.YOUR_DOMAIN/fullchain.pem\ntls-pkey=/etc/letsencrypt/live/turn.YOUR_DOMAIN/privkey.pem\n"
+    },
+    "systemd_restart": [
+      "sudo systemctl daemon-reload",
+      "sudo systemctl enable coturn",
+      "sudo systemctl restart coturn",
+      "sudo systemctl status coturn"
+    ]
+  },
+  "auth_and_credentials": {
+    "approach": "Use REST API / ephemeral TURN credentials (HMAC) — do NOT use static long-lived usernames/passwords in client builds.",
+    "credential_lifetime_seconds": 300,
+    "username_format": "<expiryEpoch>:<userIdOrRandom>",
+    "password_generation_pseudocode": "password = base64( HMAC_SHA1(static_auth_secret, username) )\n# Use the static_auth_secret configured in coturn",
+    "nodejs_example_to_generate": "const crypto = require('crypto');\nfunction makeTurnCred(staticSecret, userId, ttlSeconds=300){\n  const expiry = Math.floor(Date.now()/1000) + ttlSeconds;\n  const username = `${expiry}:${userId}`;\n  const hmac = crypto.createHmac('sha1', staticSecret).update(username).digest('base64');\n  return {username, credential: hmac, ttl: ttlSeconds};\n}\n",
+    "server_api_endpoint": "POST /api/turn/credential -> returns {username, credential, ttl, urls:[...]}. Protect with auth.",
+    "example_ice_urls_to_return": [
+      "turn:turn.YOUR_DOMAIN:3478?transport=udp",
+      "turn:turn.YOUR_DOMAIN:3478?transport=tcp",
+      "turns:turn.YOUR_DOMAIN:5349?transport=tcp",
+      "stun:turn.YOUR_DOMAIN:3478"
+    ]
+  },
+  "client_integration_example": {
+    "js_ice_server_array_example": "const turnResp = await fetch('/api/turn/credential'); // authenticated\nconst creds = await turnResp.json();\nconst pc = new RTCPeerConnection({\n  iceServers: [{\n    urls: turnResp.urls || [\n      'stun:turn.YOUR_DOMAIN:3478',\n      'turn:turn.YOUR_DOMAIN:3478?transport=udp',\n      'turn:turn.YOUR_DOMAIN:3478?transport=tcp',\n      'turns:turn.YOUR_DOMAIN:5349?transport=tcp'\n    ],\n    username: creds.username,\n    credential: creds.credential\n  }]\n});",
+    "note": "Always request credentials from your server (authenticated) at call start. Do not hardcode passwords in app."
+  },
+  "network_and_firewall": {
+    "required_ports": [
+      {"port":"3478","protocol":"tcp/udp","purpose":"STUN/TURN"},
+      {"port":"5349","protocol":"tcp","purpose":"TURN over TLS (recommended)"},
+      {"port_range":"49152-65535","protocol":"udp","purpose":"TURN relay ports (configure min/max for security)"}
+    ],
+    "nat_and_external_ip": "If server behind NAT, set external-ip=<publicIP>/<privateIP> in turnserver.conf and ensure port mapping.",
+    "selinux_ufw_iptables_examples": [
+      "ufw allow 3478",
+      "ufw allow 5349/tcp",
+      "ufw allow proto udp from any to any port 49152:65535"
+    ]
+  },
+  "coturn_hardening": {
+    "disable_static_users": "Do not create long-lived static users unless protected. Use use-auth-secret and REST HMAC method.",
+    "logging": "Set no-stdout-log and rotate logs. For privacy, consider disabling persistent logs or encrypting them and auto-deleting <48h.",
+    "rate_limits": "Set per-user or per-IP allocation limits. Example: total-quota and bps-capacity settings.",
+    "monitoring": "Export basic health metrics (process up, CPU, memory). Do not export PII/logs to central monitoring."
+  },
+  "debugging_steps_and_expected_outputs": {
+    "step1_check_service": {
+      "command": "sudo systemctl status coturn",
+      "expected": "active (running)"
+    },
+    "step2_check_ports_listening": {
+      "command": "ss -tunlp | grep turnserver || ss -tunlp | grep 3478",
+      "expected": "3478 listening on 0.0.0.0 (udp/tcp) and 5349 on tcp if TLS enabled"
+    },
+    "step3_check_tls_cert": {
+      "command": "openssl s_client -connect turn.YOUR_DOMAIN:5349 -showcerts",
+      "expected": "Certificate chain valid and commonName matches"
+    },
+    "step4_client_ice_candidate_logging": {
+      "client_console_snippet": "pc.onicecandidate = e => console.log('ICE:', e.candidate);",
+      "expected_candidate_types": ["host", "srflx", "relay"],
+      "key_sign": "You must see 'typ relay' candidate when devices are on different networks. If no 'relay', TURN config or auth failed."
+    },
+    "step5_turn_auth_test": {
+      "curl_example": "Use the server API that mints credentials and attempt to connect using those creds. Observe coturn logs on allocation attempts.",
+      "coturn_log_path": "/var/log/turn/turn.log"
+    },
+    "common_errors": {
+      "no_relay_candidates": "TURN not reachable, auth failed, or firewall blocking ports",
+      "401_auth_failure": "HMAC username/password mismatch (check static_auth_secret)",
+      "tls_errors_on_5349": "Cert path misconfigured or invalid cert"
+    }
+  },
+  "acceptance_tests": {
+    "test1_local_same_network": {
+      "scenario": "PC and phone on same WiFi",
+      "expected": "Direct connection; host or srflx candidates appear; call works (sanity check)"
+    },
+    "test2_cross_network_mobile_to-desktop": {
+      "scenario": "PC on home wifi, phone on mobile data (or different wifi)",
+      "expected": "relay candidate appears on both peers; iceConnectionState becomes 'connected'; media flows"
+    },
+    "test3_tls_fallback": {
+      "scenario": "Simulate UDP blocked network (block UDP outbound on client)",
+      "expected": "TCP or TLS relay candidate used and media flows"
+    },
+    "test4_long_run": {
+      "scenario": "Make calls repeatedly for 24h automated test",
+      "expected": "No memory leaks on coturn, stable allocation counts, no spike in auth failures"
+    }
+  },
+  "monitoring_and_alerting": {
+    "metrics_to_monitor": [
+      "coturn process up",
+      "active allocations count",
+      "failed authentication attempts rate",
+      "CPU/memory on turn nodes",
+      "network bandwidth on relay ports"
+    ],
+    "alerts_examples": [
+      {"condition":"failed_auth_rate > threshold","action":"pagerduty"},
+      {"condition":"active_allocations > capacity * 0.8","action":"scale/add nodes"}
+    ]
+  },
+  "privacy_and_logging_guidelines": {
+    "ip_storage_policy": "Do not persist client IP addresses. If temporarily logged for debugging, encrypt and delete within 24–72 hours.",
+    "turn_log_policy": "Rotate and delete logs automatically. Avoid plaintext logs with candidate/private info.",
+    "credential_lifetime_policy": "TURN credentials TTL <= 300 seconds (5 minutes)"
+  },
+  "sample_troubleshoot_payload_for_engineer_to_send_to_support": {
+    "fields_to_capture": [
+      "client_timestamp_utc",
+      "client_id",
+      "offer_sdp_snippet (non-sensitive)",
+      "iceCandidates_list",
+      "pc.iceConnectionState",
+      "server_turn_credential_response",
+      "coturn_server_log_tail (last 200 lines)",
+      "network_trace (pc.getConfiguration(), navigator.connection info if available)"
+    ],
+    "note": "Strip any PII before sending to public channels; use secure channels for logs."
+  },
+  "rollback_and_scaling": {
+    "initial_deploy": "Start with single coturn node; validate cross-network tests.",
+    "scale_horizontal": "Add more coturn nodes behind DNS round-robin or load balancer. Ensure REST secret shared across nodes.",
+    "statelessness": "coturn is largely stateless; ensure setup replicates static_auth_secret consistently and share TLS certs or use separate certs per node"
+  },
+  "extras_and_references": {
+    "recommendations": [
+      "Always provide TURN over TLS (5349) to maximize reachability on hostile networks",
+      "Use ephemeral credentials via HMAC REST generation (do not embed static creds in client builds)",
+      "Test from carrier networks and corporate wifi to confirm TLS fallback"
+    ],
+    "example_issue_resolution_time": "Most configuration issues fixed within 1–3 hours with the above checklist and debug artifacts"
+  },
+  "next_actions_for_engineer": [
+    "1) Provision VM with public IP and DNS record for turn.YOUR_DOMAIN",
+    "2) Install coturn and place provided config into /etc/turnserver.conf (replace placeholders)",
+    "3) Install TLS certs and configure tls-cert/tls-pkey in coturn config",
+    "4) Implement credential minting endpoint on signaling backend using HMAC (example nodejs pseudocode provided)",
+    "5) Update client to fetch TURN creds at call start and use returned iceServers array",
+    "6) Open firewall ports and run acceptance tests (acceptance_tests block)",
+    "7) Collect client ICE logs and coturn logs if any failures; follow debugging_steps"
+  ]
+}

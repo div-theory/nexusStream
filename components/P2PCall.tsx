@@ -1,4 +1,3 @@
-
 import React, { useEffect, useRef, useState } from 'react';
 import Peer from 'peerjs';
 import { Button } from './Button';
@@ -78,6 +77,7 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
         const PeerClass = (Peer as any).default || Peer;
         peer = new PeerClass(undefined, {
           debug: 1,
+          secure: true, // Force secure connection for Vercel/HTTPS
           config: {
             iceServers: [
               { urls: 'stun:stun.l.google.com:19302' },
@@ -158,8 +158,10 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
             ephKeys,
             'SECURE_HANDSHAKE_INIT'
           );
-          conn.send(payload);
-          conn.send({ type: 'STATUS', video: !isVideoOff, audio: !isMuted });
+          if (conn.open) {
+            conn.send(payload);
+            conn.send({ type: 'STATUS', video: !isVideoOff, audio: !isMuted });
+          }
       });
 
       conn.on('data', async (data: any) => {
@@ -193,7 +195,7 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
                     ephemeralKeysRef.current!,
                     'SECURE_HANDSHAKE_RESP'
                   );
-                  conn.send(respPayload);
+                  if (conn.open) conn.send(respPayload);
                }
              } else {
                setError("SECURITY ALERT: Verification Failed.");
@@ -218,6 +220,11 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
 
       rotationIntervalRef.current = setInterval(async () => {
         try {
+          if (!currentDataConn.open) {
+             console.warn("Skipping rotation: Connection closed");
+             return;
+          }
+
           // 1. Generate NEW Ephemeral Keys
           const newKeys = await SecureProtocolService.generateEphemeralKeys();
           ephemeralKeysRef.current = newKeys;

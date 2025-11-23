@@ -692,20 +692,20 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
                 My Signal
             </h2>
             
-            <div className="mb-8">
+            <div className="mb-4">
                 <div className="text-2xl md:text-4xl font-black text-white mb-2 break-all tracking-tighter leading-tight">
                     {peerId ? peerId.substring(0, 6) : '......'}
                     <span className="text-zinc-800">{peerId ? peerId.substring(6) : ''}</span>
                 </div>
             </div>
             
-            {/* Identity Fingerprint Display */}
+            {/* Identity Fingerprint Display - Styled to match screenshot */}
             {identity && (
-              <div className="mb-10 p-4 bg-zinc-950 border border-zinc-900 rounded-xl flex items-center gap-4">
-                 <Fingerprint size={20} className="text-zinc-700"/>
-                 <div className="flex flex-col">
-                   <span className="text-[9px] text-zinc-600 font-mono uppercase tracking-widest mb-1">Public Key Hash</span>
-                   <span className="text-xs text-zinc-500 font-mono tracking-widest">{identity.publicKeyFingerprint}</span>
+              <div className="mb-10 flex items-center gap-4 select-text">
+                 <Fingerprint size={36} strokeWidth={1} className="text-zinc-700 shrink-0"/>
+                 <div className="flex flex-col gap-1">
+                   <span className="text-[10px] text-zinc-600 font-mono uppercase tracking-[0.2em]">Public Key Hash</span>
+                   <span className="text-lg md:text-xl text-blue-500 font-mono tracking-widest leading-none">{identity.publicKeyFingerprint}</span>
                  </div>
               </div>
             )}

@@ -68,6 +68,15 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
   const rotationIntervalRef = useRef<any>(null);
   const isRequestingStream = useRef(false);
 
+  // --- HELPER: STOP STREAM ---
+  const stopLocalStream = () => {
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach(track => track.stop());
+      localStreamRef.current = null;
+      setStream(null);
+    }
+  };
+
   // --- 1. Initialize Peer, Crypto Identity & Local Stream ---
   useEffect(() => {
     const initSystem = async () => {
@@ -80,16 +89,13 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
       try {
         const PeerClass = (Peer as any).default || Peer;
         peer = new PeerClass(undefined, {
-          debug: 2,
+          debug: 1, // Reduced debug level
           secure: true, // Force secure connection for Vercel/HTTPS
           pingInterval: 5000, // Keep socket alive on mobile
           config: {
             iceServers: [
               { urls: 'stun:stun.l.google.com:19302' },
-              { urls: 'stun:stun1.l.google.com:19302' },
-              { urls: 'stun:stun2.l.google.com:19302' },
-              { urls: 'stun:stun3.l.google.com:19302' },
-              { urls: 'stun:stun4.l.google.com:19302' },
+              { urls: 'stun:global.stun.twilio.com:3478' } // Using only 2 reliable servers to speed up discovery
             ],
             iceCandidatePoolSize: 10,
           }
@@ -129,7 +135,6 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
         // Handle "Lost connection to server" gracefully
         if (err.type === 'network' || err.message?.includes('Lost connection')) {
              console.log("Transient network error. Attempting recovery...");
-             // Do not show error to user immediately, let reconnect logic handle it
              return; 
         }
 
@@ -138,9 +143,6 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
             setStatus('idle');
         } else if (err.type === 'unavailable-id' || err.type === 'invalid-id' || err.type === 'browser-incompatible') {
             setError(`Connection Error: ${err.type}`);
-        } else {
-            // For other errors, show them
-            // setError(`System Error: ${err.type || err.message}`); 
         }
       });
 
@@ -157,7 +159,7 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
         };
 
         const currentStream = localStreamRef.current;
-        if (currentStream) {
+        if (currentStream && currentStream.active) {
           answerCall(currentStream);
         } else {
           // Fallback if no local stream yet
@@ -356,17 +358,25 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
   }, [remoteStream, status]);
 
 
-  // Robust Helper for Mobile Streams
+  // Robust Helper for Mobile Streams with Delay
   const getMobileFriendlyStream = async (): Promise<MediaStream> => {
      try {
+       // Stop any existing tracks first
+       stopLocalStream();
+       
        // Try specific mobile constraints first
+       console.log("Requesting camera: User facing mode...");
        return await navigator.mediaDevices.getUserMedia({ 
            video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } }, 
            audio: true 
        });
      } catch (err) {
-       console.warn("Specific constraints failed, trying generic...", err);
-       // Fallback to any camera
+       console.warn("Specific constraints failed.", err);
+       
+       // CRITICAL FIX: Wait 500ms to allow hardware to release the failed request
+       await new Promise(resolve => setTimeout(resolve, 500));
+
+       console.log("Retrying with generic constraints...");
        return await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
      }
   };
@@ -374,29 +384,36 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
   // Initialize Local Video Preview
   useEffect(() => {
     const initLocalVideo = async () => {
-      if (isRequestingStream.current) return;
+      // If we already have a stream, don't request again
+      if (localStreamRef.current || isRequestingStream.current) return;
+      
       isRequestingStream.current = true;
       
       try {
-        // Add small delay to allow previous streams to fully clear
-        await new Promise(r => setTimeout(r, 100));
-        
         const mediaStream = await getMobileFriendlyStream();
         setStream(mediaStream);
         localStreamRef.current = mediaStream;
         setError(null);
       } catch (err: any) {
         console.error("Failed local stream", err);
-        // Don't set global error yet, just log
+        
+        if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
+             setError("Camera is in use by another app. Please close other tabs/apps and reload.");
+        } else if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+             setError("Camera permission denied. Please enable access in browser settings.");
+        } else {
+             setError(`Camera Error: ${err.message || 'Unknown error'}`);
+        }
       } finally {
         isRequestingStream.current = false;
       }
     };
+    
     initLocalVideo();
+    
     return () => {
-      if (localStreamRef.current) {
-          localStreamRef.current.getTracks().forEach(track => track.stop());
-      }
+      // Don't stop stream on simple re-renders, only if component truly unmounts
+      // stopLocalStream(); 
     };
   }, []);
 
@@ -404,7 +421,10 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
 
   const initiateCall = (remoteId: string) => {
     const currentStream = localStreamRef.current;
-    if (!peerRef.current || !currentStream || !identity) return;
+    if (!peerRef.current || !currentStream || !identity) {
+        if (!currentStream) setError("Camera not ready. Cannot start call.");
+        return;
+    }
     if (!remoteId) {
         setError("Please enter a valid remote ID.");
         return;
@@ -722,7 +742,8 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
              <div className="absolute inset-0 bg-black/80 flex items-center justify-center p-6 z-20">
                  <div className="flex flex-col items-center text-center">
                     <AlertCircle size={32} className="text-red-500 mb-2" />
-                    <span className="text-red-500 font-mono text-xs">{error}</span>
+                    <span className="text-red-500 font-mono text-xs max-w-sm">{error}</span>
+                    {error.includes("use") && <Button variant="ghost" onClick={() => window.location.reload()} className="mt-4">Reload</Button>}
                  </div>
              </div>
          )}

@@ -62,7 +62,17 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
     try {
       // Safe instantiation for ESM/CDN interop
       const PeerClass = (Peer as any).default || Peer;
-      peer = new PeerClass();
+      
+      // CRITICAL: STUN servers required for connection over real networks (NAT traversal)
+      peer = new PeerClass(undefined, {
+        debug: 1,
+        config: {
+          iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:global.stun.twilio.com:3478' }
+          ]
+        }
+      });
     } catch (e) {
       console.error("PeerJS init failed", e);
       setError("Failed to initialize secure connection module.");
@@ -76,8 +86,14 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
 
     peer.on('error', (err: any) => {
       console.error("PeerJS Error:", err);
-      if (err.type === 'unavailable-id' || err.type === 'invalid-id' || err.type === 'browser-incompatible') {
+      // 'peer-unavailable' usually means the remote ID doesn't exist yet or is wrong
+      if (err.type === 'peer-unavailable') {
+          setError(`User "${remotePeerIdValue}" is unreachable. Check the ID.`);
+          setStatus('idle');
+      } else if (err.type === 'unavailable-id' || err.type === 'invalid-id' || err.type === 'browser-incompatible') {
           setError(`Connection Error: ${err.type}`);
+      } else if (err.type === 'network') {
+          setError("Network error. Please check your internet connection.");
       }
     });
 
@@ -219,17 +235,30 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
         setError("Cannot connect: Camera stream not active.");
         return;
     }
-    
+
+    if (!remoteId) {
+        setError("Please enter a valid remote ID.");
+        return;
+    }
+
+    // Reset error state
+    setError(null);
     setStatus('calling');
     
-    // Media Call
-    const call = peerRef.current.call(remoteId, currentStream);
-    handleCallSetup(call); // Bind events immediately
+    try {
+        // Media Call
+        const call = peerRef.current.call(remoteId, currentStream);
+        handleCallSetup(call); // Bind events immediately
 
-    // Data Connection (for status)
-    const conn = peerRef.current.connect(remoteId);
-    setupDataConnection(conn);
-    setCurrentDataConn(conn);
+        // Data Connection (for status)
+        const conn = peerRef.current.connect(remoteId);
+        setupDataConnection(conn);
+        setCurrentDataConn(conn);
+    } catch(e: any) {
+        console.error("Initiate call error:", e);
+        setError("Failed to start connection sequence.");
+        setStatus('idle');
+    }
   };
 
   const setupAudioAnalysis = (stream: MediaStream) => {

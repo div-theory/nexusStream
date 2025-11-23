@@ -69,14 +69,13 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
       return;
     }
     
-    peer.on('open', (id) => {
+    peer.on('open', (id: string) => {
       setPeerId(id);
       setStatus('idle');
     });
 
-    peer.on('error', (err) => {
+    peer.on('error', (err: any) => {
       console.error("PeerJS Error:", err);
-      // Don't show critical error for transient network issues, but do for fatal ones
       if (err.type === 'unavailable-id' || err.type === 'invalid-id' || err.type === 'browser-incompatible') {
           setError(`Connection Error: ${err.type}`);
       }
@@ -91,13 +90,11 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
         call.answer(currentStream);
         handleCallSetup(call);
       } else {
-        // Fallback: If no stream exists yet, try to get it (rare race condition)
+        // Fallback: If no stream exists yet, try to get it
         navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: true })
           .then((mediaStream) => {
             setStream(mediaStream);
             localStreamRef.current = mediaStream;
-            if (myVideoRef.current) myVideoRef.current.srcObject = mediaStream;
-            
             call.answer(mediaStream);
             handleCallSetup(call);
           })
@@ -111,15 +108,7 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
     // Handle incoming data connections (for status sync)
     peer.on('connection', (conn: DataConnection) => {
        setCurrentDataConn(conn);
-       conn.on('data', (data: any) => {
-          if (data && data.type === 'STATUS') {
-             setRemoteStatus({ isVideoEnabled: data.video, isAudioEnabled: data.audio });
-          }
-       });
-       conn.on('open', () => {
-          // Send initial status back
-          conn.send({ type: 'STATUS', video: !isVideoOff, audio: !isMuted });
-       });
+       setupDataConnection(conn);
     });
 
     peerRef.current = peer;
@@ -131,37 +120,71 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
     };
   }, []);
 
+  const setupDataConnection = (conn: DataConnection) => {
+      conn.on('data', (data: any) => {
+          if (data && data.type === 'STATUS') {
+             setRemoteStatus({ isVideoEnabled: data.video, isAudioEnabled: data.audio });
+          }
+      });
+      conn.on('open', () => {
+          // Send initial status back safely
+          if(conn.open) {
+             conn.send({ type: 'STATUS', video: !isVideoOff, audio: !isMuted });
+          }
+      });
+      conn.on('error', (err: any) => console.error("Data connection error", err));
+  };
+
   // Helper to setup call event listeners
   const handleCallSetup = (call: MediaConnection) => {
       setStatus('connected');
       
-      call.on('stream', (remoteStream: MediaStream) => {
-        setRemoteStream(remoteStream);
-        if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remoteStream;
-        setupAudioAnalysis(remoteStream);
+      call.on('stream', (rStream: MediaStream) => {
+        // Just set state here. The useEffect below handles the DOM assignment.
+        setRemoteStream(rStream);
+        setupAudioAnalysis(rStream);
       });
 
       call.on('close', () => handleEndCall());
-      call.on('error', (e: any) => console.error("Call error", e));
+      call.on('error', (e: any) => {
+          console.error("Call error", e);
+          setError("Call connection interrupted.");
+      });
+      
       setCurrentCall(call);
   };
+
+  // --- STREAM ATTACHMENT EFFECT (The Fix for Freezing/Black Screen) ---
+  useEffect(() => {
+    // Attach Local Stream
+    if (myVideoRef.current && stream) {
+        myVideoRef.current.srcObject = stream;
+        // Ensure play is called to avoid frozen frames
+        myVideoRef.current.play().catch(e => console.log("Local play error (harmless if backgrounded):", e));
+    }
+  }, [stream, status, isVideoOff]); // Re-run when status changes (UI re-renders)
+
+  useEffect(() => {
+    // Attach Remote Stream
+    if (remoteVideoRef.current && remoteStream) {
+        remoteVideoRef.current.srcObject = remoteStream;
+        // Critical: Explicitly play the remote video
+        remoteVideoRef.current.play().catch(e => console.error("Remote video play error:", e));
+    }
+  }, [remoteStream, status]); // Re-run when status changes (UI re-renders)
+
 
   // Initialize Local Video Preview
   useEffect(() => {
     const initLocalVideo = async () => {
       try {
-        // Mobile constraint: prefer front camera
         const mediaStream = await navigator.mediaDevices.getUserMedia({ 
             video: { facingMode: 'user' }, 
             audio: true 
         });
         
         setStream(mediaStream);
-        localStreamRef.current = mediaStream;
-        
-        if (myVideoRef.current) {
-            myVideoRef.current.srcObject = mediaStream;
-        }
+        localStreamRef.current = mediaStream; // Important: update ref immediately
         setError(null);
       } catch (err: any) {
         console.error("Failed local stream", err);
@@ -179,24 +202,17 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
     initLocalVideo();
     
     return () => {
-      // Use ref to ensure we clean up the actual stream created in this effect
+      // Cleanup tracks on unmount
       if (localStreamRef.current) {
           localStreamRef.current.getTracks().forEach(track => track.stop());
       }
     };
   }, []);
 
-  // Mirror effect binding
-  useEffect(() => {
-    if (myVideoRef.current && stream) {
-        myVideoRef.current.srcObject = stream;
-    }
-  }, [stream, status]);
 
   // --- 2. Logic: Calls & Connections ---
 
   const initiateCall = (remoteId: string) => {
-    // Check ref instead of state to be safe, though state should match
     const currentStream = localStreamRef.current;
     
     if (!peerRef.current || !currentStream) {
@@ -208,41 +224,19 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
     
     // Media Call
     const call = peerRef.current.call(remoteId, currentStream);
-    
-    call.on('stream', (remoteStream: MediaStream) => {
-      setRemoteStream(remoteStream);
-      if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remoteStream;
-      setupAudioAnalysis(remoteStream);
-      setStatus('connected');
-    });
-
-    call.on('close', () => {
-      handleEndCall();
-    });
-    
-    call.on('error', (err: any) => {
-        console.error("Call connection error", err);
-        setError("Call connection failed.");
-        setStatus('idle');
-    });
-
-    setCurrentCall(call);
+    handleCallSetup(call); // Bind events immediately
 
     // Data Connection (for status)
     const conn = peerRef.current.connect(remoteId);
-    conn.on('open', () => {
-        conn.send({ type: 'STATUS', video: !isVideoOff, audio: !isMuted });
-    });
-    conn.on('data', (data: any) => {
-        if (data && data.type === 'STATUS') {
-            setRemoteStatus({ isVideoEnabled: data.video, isAudioEnabled: data.audio });
-        }
-    });
+    setupDataConnection(conn);
     setCurrentDataConn(conn);
   };
 
   const setupAudioAnalysis = (stream: MediaStream) => {
     try {
+        // Prevent multiple analysers
+        if (analyserRef.current) return;
+
         const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
         const audioCtx = new AudioContextClass();
         const analyser = audioCtx.createAnalyser();
@@ -258,11 +252,17 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
 
         const checkAudio = () => {
             if (!analyserRef.current) return;
+            
+            // Resume context if suspended (browser policy)
+            if (audioContextRef.current?.state === 'suspended') {
+                audioContextRef.current.resume();
+            }
+
             analyserRef.current.getByteFrequencyData(dataArray);
             const sum = dataArray.reduce((a, b) => a + b, 0);
             const average = sum / bufferLength;
-            // Threshold for "speaking"
-            setIsRemoteSpeaking(average > 15); // Slightly increased threshold
+            
+            setIsRemoteSpeaking(average > 10);
             animationRef.current = requestAnimationFrame(checkAudio);
         };
         checkAudio();
@@ -283,9 +283,9 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
     if (stream) {
       const audioTrack = stream.getAudioTracks()[0];
       if (audioTrack) {
-        const newMutedState = !audioTrack.enabled; // Toggle
-        audioTrack.enabled = newMutedState; // Actually flip
-        const isNowMuted = !newMutedState; // If enabled=true, muted=false
+        const newMutedState = !audioTrack.enabled; 
+        audioTrack.enabled = newMutedState;
+        const isNowMuted = !newMutedState;
         setIsMuted(isNowMuted);
         sendStatusUpdate(!isVideoOff, !isNowMuted);
       }
@@ -319,7 +319,7 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
         const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
         replaceStream(screenStream);
         setIsScreenSharing(true);
-        screenStream.getVideoTracks()[0].onended = () => toggleScreenShare();
+        screenStream.getVideoTracks()[0].onended = () => toggleScreenShare(); // Revert on stop
       } catch (e) {
         console.error("Screen share cancelled", e);
       }
@@ -327,20 +327,30 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
   };
 
   const replaceStream = (newStream: MediaStream) => {
-    // Stop old video tracks only
+    // Stop old video tracks only (keep audio if possible, but simplest is to replace all)
     if (stream) {
         stream.getVideoTracks().forEach(t => t.stop());
     }
+    
     setStream(newStream);
-    localStreamRef.current = newStream; // Update ref
+    localStreamRef.current = newStream;
     
-    if (myVideoRef.current) myVideoRef.current.srcObject = newStream;
-    
+    // Explicitly update sender for the active call
     if (currentCall && currentCall.peerConnection) {
         const videoTrack = newStream.getVideoTracks()[0];
+        const audioTrack = newStream.getAudioTracks()[0];
+
         const senders = currentCall.peerConnection.getSenders();
+        
         const videoSender = senders.find((s: RTCRtpSender) => s.track?.kind === 'video');
-        if (videoSender && videoTrack) videoSender.replaceTrack(videoTrack);
+        if (videoSender && videoTrack) {
+            videoSender.replaceTrack(videoTrack);
+        }
+        
+        const audioSender = senders.find((s: RTCRtpSender) => s.track?.kind === 'audio');
+        if (audioSender && audioTrack) {
+            audioSender.replaceTrack(audioTrack);
+        }
     }
   };
 
@@ -356,6 +366,7 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
     if (audioContextRef.current) {
         audioContextRef.current.close();
         audioContextRef.current = null;
+        analyserRef.current = null;
     }
     onEndCall();
   };
@@ -449,7 +460,7 @@ export const P2PCall: React.FC<P2PCallProps> = ({ onEndCall }) => {
         </div>
 
         {/* BOTTOM CONTROLS */}
-        <div className="absolute bottom-8 left-1/2 -translate-x-1/2 flex items-center gap-3 md:gap-6 p-3 md:p-4 bg-black/80 backdrop-blur-md border border-white/10 rounded-2xl z-40 shadow-2xl">
+        <div className="absolute bottom-8 left-1/2 -translate-x-1/2 flex items-center gap-3 md:gap-6 p-3 md:p-4 bg-black/80 backdrop-blur-md border border-white/10 rounded-2xl z-40 shadow-2xl safe-pb">
             <button onClick={toggleAudio} className={`p-4 rounded-xl transition-all active:scale-95 ${isMuted ? 'bg-red-500 text-white shadow-[0_0_15px_rgba(239,68,68,0.5)]' : 'bg-zinc-800 text-white hover:bg-zinc-700'}`}>
                 {isMuted ? <MicOff size={24} /> : <Mic size={24} />}
             </button>
